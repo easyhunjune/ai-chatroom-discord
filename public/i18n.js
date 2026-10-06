@@ -1,4 +1,4 @@
-// UI strings for the web pages (index.html + app.js, world.html).
+// UI strings for the web page (index.html + app.js).
 //
 // The room language comes from <html lang>: the server rewrites it in every page it serves
 // from config.json "language" (lib/i18n.mjs). Text that the server writes itself (system
@@ -14,9 +14,8 @@
 //
 // Glossary (same words as the server, prompts and docs):
 //   진심모드 / Boost mode / 本気モード        침묵 깨기 / Break the silence / 沈黙を破る
-//   건축 월드 / Build World / 建築ワールド    작업공간 / Workspace / ワークスペース
-//   개인 메모 / Notes / メモ                  스티커 / Stickers / スタンプ
-//   개발자 / Dev / 開発者                     방 켜기 / Start room / ルームを開始
+//   작업공간 / Workspace / ワークスペース     개인 메모 / Notes / メモ
+//   스티커 / Stickers / スタンプ              방 켜기 / Start room / ルームを開始
 //   방장 / Host / オーナー (default owner name only)   사용량 / Usage / 使用量
 
 const LANGS = ['ko', 'en', 'ja'];
@@ -76,11 +75,6 @@ const ko = {
   'member.toggleAria': '{name} 참여',
   'dev.name': '개발자',
   'dev.sub': '개발 세션',
-  'dev.tooltip': '개발 세션 Claude (이 방을 만든 Claude Code 세션)\nMCP 브릿지로 연결됐을 때만 방에 들어와.\n연결 방법: dev-bridge/README.md',
-  'dev.online': '연결됨 · @개발자로 불러',
-  'dev.offline': '연결 안 됨',
-  'dev.chip': '🛠 개발자 연결됨',
-  'dev.chipTitle': '개발 세션 Claude가 MCP 브릿지로 방에 들어와 있어',
   'list.sep': ', ',
 
   // typing bar ({names} is HTML)
@@ -114,8 +108,6 @@ const ko = {
   'head.openSide': '멤버 보기',
   'head.theme': '밝게/어둡게',
   'head.ws': '작업공간 열기/닫기',
-  'world.open': '건축 월드 열기',
-  'world.linkTitle': '건축 월드 (3D로 구경)',
 
   // timeline
   'chat.loadMore': '이전 대화 더 보기',
@@ -131,7 +123,6 @@ const ko = {
   'quote.missing': '#{id} 메시지',
   'desc.cap': '👁 AI용 설명: {desc}',
   'desc.title': 'Grok·Gemini는 사진 대신 이 설명을 받아',
-  'attach.expand': '크게 보기',
   'tools.reply': '답장',
   'tools.react': '반응',
   'tools.reactAria': '반응 남기기',
@@ -170,7 +161,7 @@ const ko = {
   'tab.files': '작업공간',
   'tab.notes': '개인 메모',
   'tab.usage': '사용량',
-  'ws.empty': '아직 비어 있어.<br>AI들이 여기에 글, SVG 그림, 작은 웹페이지 같은 걸 같이 만들어.',
+  'ws.empty': '아직 비어 있어.<br>AI들이 여기에 글이나 SVG 그림 같은 걸 같이 만들어.',
   'ws.intro': '파일 {n}개 · 모두 같이 쓰는 공간',
   'viewer.back': '← 목록',
   'viewer.createdBy': '(처음 만든 건 {name})',
@@ -219,24 +210,6 @@ const ko = {
   'spark.table': '기록 표',
   'spark.time': '시각',
   'spark.left': '남음',
-
-  // build world (world.html)
-  'world.title': '건축 월드',
-  'world.nightTitle': '밤이 되면 램프가 더 잘 보여',
-  'world.night': '🌙 밤',
-  'world.day': '☀️ 낮',
-  'world.rotateTitle': '천천히 돌려보기',
-  'world.rotate': '자동 회전',
-  'world.homeTitle': '처음 시점으로',
-  'world.home': '시점 초기화',
-  'world.back': '방으로',
-  'world.help': '드래그: 돌리기 · 휠: 확대 · 우클릭 드래그: 이동 · 멤버 누르면 따라가기',
-  'world.empty': '아직 아무것도 안 지었어. 방에서 멤버들한테 뭐 지어달라고 해봐.',
-  'world.sticker': '[스티커]',
-  'world.picture': '[그림]',
-  'world.blocks': '블록 {n}개',
-  'world.lights': '빛 {n}개',
-  'world.loadFailed': '월드를 못 불러왔어. 서버를 확인해줘.',
 };
 
 const en = {
@@ -285,11 +258,6 @@ const en = {
   'member.toggleAria': '{name} in the room',
   'dev.name': 'Dev',
   'dev.sub': 'dev session',
-  'dev.tooltip': 'Dev session Claude (the Claude Code session that built this room)\nJoins the room only while connected through the MCP bridge.\nHow to connect: dev-bridge/README.md',
-  'dev.online': 'Connected · mention @Dev',
-  'dev.offline': 'Not connected',
-  'dev.chip': '🛠 Dev connected',
-  'dev.chipTitle': 'The dev session Claude is in the room through the MCP bridge',
   'list.sep': ', ',
 
   'typing.typing': ({ names, n }) => `${names} ${n === 1 ? 'is' : 'are'} typing`,
@@ -320,8 +288,6 @@ const en = {
   'head.openSide': 'Show members',
   'head.theme': 'Light/dark',
   'head.ws': 'Open/close workspace',
-  'world.open': 'Open Build World',
-  'world.linkTitle': 'Build World (explore in 3D)',
 
   'chat.loadMore': 'Load earlier messages',
   'chat.jump': 'New messages ↓',
@@ -336,7 +302,6 @@ const en = {
   'quote.missing': 'Message #{id}',
   'desc.cap': '👁 Description for the AIs: {desc}',
   'desc.title': 'Grok and Gemini get this description instead of the photo',
-  'attach.expand': 'Expand',
   'tools.reply': 'Reply',
   'tools.react': 'React',
   'tools.reactAria': 'Add reaction',
@@ -372,7 +337,7 @@ const en = {
   'tab.files': 'Workspace',
   'tab.notes': 'Notes',
   'tab.usage': 'Usage',
-  'ws.empty': 'Nothing here yet.<br>The AIs make writing, SVG drawings, small web pages and more here together.',
+  'ws.empty': 'Nothing here yet.<br>The AIs make writing, SVG drawings and more here together.',
   'ws.intro': ({ n }) => `${n} file${s(n)} · shared by everyone`,
   'viewer.back': '← Files',
   'viewer.createdBy': '(created by {name})',
@@ -420,23 +385,6 @@ const en = {
   'spark.table': 'Data table',
   'spark.time': 'Time',
   'spark.left': 'Left',
-
-  'world.title': 'Build World',
-  'world.nightTitle': 'Lamps stand out more at night',
-  'world.night': '🌙 Night',
-  'world.day': '☀️ Day',
-  'world.rotateTitle': 'Spin the view slowly',
-  'world.rotate': 'Auto rotate',
-  'world.homeTitle': 'Back to the starting view',
-  'world.home': 'Reset view',
-  'world.back': 'Back to room',
-  'world.help': 'Drag: rotate · Wheel: zoom · Right-drag: pan · Click a member to follow',
-  'world.empty': 'Nothing built yet. Ask the members in the room to build something.',
-  'world.sticker': '[Sticker]',
-  'world.picture': '[Picture]',
-  'world.blocks': ({ n }) => `${n} block${s(n)}`,
-  'world.lights': ({ n }) => `${n} light${s(n)}`,
-  'world.loadFailed': 'Couldn’t load the world. Check the server.',
 };
 
 const ja = {
@@ -485,11 +433,6 @@ const ja = {
   'member.toggleAria': '{name}を参加させる',
   'dev.name': '開発者',
   'dev.sub': '開発セッション',
-  'dev.tooltip': '開発セッションのClaude(このルームを作ったClaude Codeのセッション)\nMCPブリッジで接続している間だけルームに参加します。\n接続方法: dev-bridge/README.md',
-  'dev.online': '接続中 · @開発者 で呼べます',
-  'dev.offline': '未接続',
-  'dev.chip': '🛠 開発者が接続中',
-  'dev.chipTitle': '開発セッションのClaudeがMCPブリッジでルームに参加しています',
   'list.sep': '、',
 
   'typing.typing': '{names}が入力中',
@@ -520,8 +463,6 @@ const ja = {
   'head.openSide': 'メンバーを表示',
   'head.theme': 'ライト/ダーク',
   'head.ws': 'ワークスペースを開く/閉じる',
-  'world.open': '建築ワールドを開く',
-  'world.linkTitle': '建築ワールド(3Dで見る)',
 
   'chat.loadMore': '以前のメッセージを表示',
   'chat.jump': '新着メッセージ ↓',
@@ -536,7 +477,6 @@ const ja = {
   'quote.missing': 'メッセージ #{id}',
   'desc.cap': '👁 AI向けの説明: {desc}',
   'desc.title': 'GrokとGeminiには写真の代わりにこの説明が届きます',
-  'attach.expand': '大きく表示',
   'tools.reply': '返信',
   'tools.react': 'リアクション',
   'tools.reactAria': 'リアクションする',
@@ -572,7 +512,7 @@ const ja = {
   'tab.files': 'ワークスペース',
   'tab.notes': 'メモ',
   'tab.usage': '使用量',
-  'ws.empty': 'まだ空っぽです。<br>AIたちがここで文章やSVGの絵、小さなWebページなどを一緒に作ります。',
+  'ws.empty': 'まだ空っぽです。<br>AIたちがここで文章やSVGの絵などを一緒に作ります。',
   'ws.intro': 'ファイル {n}件 · みんなで使う場所',
   'viewer.back': '← 一覧',
   'viewer.createdBy': '(作成: {name})',
@@ -620,23 +560,6 @@ const ja = {
   'spark.table': '記録表',
   'spark.time': '時刻',
   'spark.left': '残り',
-
-  'world.title': '建築ワールド',
-  'world.nightTitle': '夜はランプがよく見えます',
-  'world.night': '🌙 夜',
-  'world.day': '☀️ 昼',
-  'world.rotateTitle': 'ゆっくり回して見る',
-  'world.rotate': '自動回転',
-  'world.homeTitle': '最初の視点に戻す',
-  'world.home': '視点リセット',
-  'world.back': 'ルームへ',
-  'world.help': 'ドラッグ: 回転 · ホイール: ズーム · 右ドラッグ: 移動 · メンバーを押すと追いかけます',
-  'world.empty': 'まだ何も建っていません。ルームでメンバーに何か建ててもらいましょう。',
-  'world.sticker': '[スタンプ]',
-  'world.picture': '[画像]',
-  'world.blocks': 'ブロック {n}個',
-  'world.lights': 'ライト {n}個',
-  'world.loadFailed': 'ワールドを読み込めませんでした。サーバーを確認してください。',
 };
 
 export const DICT = { ko, en, ja };

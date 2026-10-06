@@ -48,12 +48,13 @@ const input = $('#input');
 
 const extOf = (p) => (String(p).split('.').pop() || '').toLowerCase();
 const wsUrl = (p, bust) => '/ws/' + String(p).split('/').map(encodeURIComponent).join('/') + (bust ? `?t=${bust}` : '');
-// The dev session (Claude Code, joined through the dev bridge) is a participant but not a scheduled AI.
-const DEV = {
-  id: 'dev', name: t('dev.name'), color: '#0f766e',
-  aliases: ['개발자', '개발 세션', '개발세션', '빌더', 'dev', 'developer', '開発者', 'デベロッパー'],
-};
+// The old dev session (the removed dev bridge) left messages in the history; they keep a name,
+// color and avatar but it is no longer a participant.
+const DEV = { id: 'dev', name: t('dev.name'), color: '#0f766e' };
 const avatar = (id) => (id === DEV.id ? '/avatars/dev.svg' : `/avatars/${id}-128.webp`);
+// Members switched off in config.json arrive with hidden: true and stay out of the UI
+// (their old messages still render).
+const shownIds = () => AI_IDS.filter((id) => !S.members[id]?.hidden);
 function nameOf(id) {
   if (id === 'user') return S.room.userName || t('user.default');
   if (id === 'system') return t('name.system');
@@ -65,7 +66,6 @@ function colorOf(id) {
   if (id === DEV.id) return DEV.color;
   return S.members[id]?.color || 'var(--muted)';
 }
-const devOnline = () => !!S.room.dev?.online;
 function timeLabel(ts) {
   return new Date(ts).toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
 }
@@ -113,12 +113,11 @@ const norm = (x) => String(x).toLowerCase()
 
 // Who does the word after "@" call? Japanese (and Korean) put particles right after a name
 // ("@Claudeさん", "@그록아"), so the longest name at the start of the word wins; a Latin
-// name must not run on into more Latin letters ("@device" is not "@dev").
+// name must not run on into more Latin letters ("@grokking" is not "@grok").
 function mentionHit(word) {
   const cands = [];
   for (const id of AI_IDS) for (const a of [...ALIASES[id], nameOf(id)]) cands.push([norm(a), colorOf(id)]);
   cands.push([norm(nameOf('user')), 'var(--mine)']);
-  for (const a of [...DEV.aliases, DEV.name]) cands.push([norm(a), DEV.color]);
   let best = null;
   for (const [a, color] of cands) {
     if (!a || (best && a.length <= best.len) || norm(word.slice(0, a.length)) !== a) continue;
@@ -136,12 +135,14 @@ function inline(s) {
   h = h.replace(/`([^`\n]+)`/g, '<code>$1</code>');
   h = h.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
   h = h.replace(/(https?:\/\/[^\s<]+[^\s<.,)\]'"])/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
-  // Any script: Latin, Hangul, kana, kanji.
-  h = h.replace(/@([\p{L}\p{N}_]+)/gu, (m, word) => {
+  // Mentions in any script (Latin, Hangul, kana, kanji), but only outside the links made just
+  // above: "youtube.com/@Grok" stays one link. The text was escaped first, so every "<a " here
+  // is ours and the odd split parts are exactly those links.
+  h = h.split(/(<a [^>]*>[^<]*<\/a>)/).map((part, i) => (i % 2 ? part : part.replace(/@([\p{L}\p{N}_]+)/gu, (m, word) => {
     const hit = mentionHit(word);
     if (!hit) return m;
-    return `<span class="mention" style="--c:${hit.color}">@${word.slice(0, hit.len)}</span>${word.slice(hit.len)}`;
-  });
+    return `<span class="mention" style="--c:${esc(hit.color)}">@${word.slice(0, hit.len)}</span>${word.slice(hit.len)}`;
+  }))).join('');
   return h.replace(/\n/g, '<br>');
 }
 
@@ -236,11 +237,6 @@ function buildQuote(id) {
   return b;
 }
 
-// Workspace pages run in a sandbox. The server's CSP header (`sandbox allow-scripts`, no network)
-// already gives them an opaque origin, so allow-same-origin here does not let them reach this
-// page; without it the Claude desktop browser pane refuses to load the frame at all.
-const WS_FRAME_SANDBOX = 'allow-scripts allow-same-origin';
-
 // What Grok and Gemini get instead of the photo (their CLIs take no images).
 function descCap(desc) {
   const cap = el('div', 'att-cap att-desc');
@@ -279,21 +275,6 @@ function buildAttach(a) {
     }
     if (a.desc) wrap.append(descCap(a.desc));
     return wrap;
-  }
-  if (e === 'html' || e === 'htm') {
-    const box = el('div', 'att-html');
-    const f = el('iframe');
-    f.setAttribute('sandbox', WS_FRAME_SANDBOX);
-    f.loading = 'lazy';
-    f.title = a.path;
-    f.src = url;
-    const bar = el('div', 'att-bar', `<span class="p">${esc(a.path)}</span>`);
-    const btn = el('button', '', esc(t('attach.expand')));
-    btn.type = 'button';
-    btn.onclick = () => openFile(a.path);
-    bar.append(btn);
-    box.append(f, bar);
-    return box;
   }
   const b = el('button', 'att-file', `<span class="ic">${esc(e.toUpperCase().slice(0, 4))}</span><span class="p">${esc(a.path)}</span>`);
   b.type = 'button';
@@ -487,7 +468,7 @@ function setMembers(list) {
 function renderMembers() {
   const ul = $('#members');
   ul.innerHTML = '';
-  for (const id of AI_IDS) {
+  for (const id of shownIds()) {
     const m = S.members[id];
     if (!m) continue;
     const li = el('li', `member st-${m.status}${m.drawing ? ' drawing' : ''}`);
@@ -519,17 +500,7 @@ function renderMembers() {
     li.append(sw);
     ul.append(li);
   }
-  const dev = el('li', `member dev st-${devOnline() ? 'idle' : 'off'}`);
-  dev.style.setProperty('--c', DEV.color);
-  dev.title = t('dev.tooltip');
-  dev.innerHTML = `
-    <div class="av-wrap"><img class="av" src="${avatar(DEV.id)}" alt=""><span class="st-dot"></span></div>
-    <div class="m-info">
-      <div class="m-name"><span class="n">${esc(DEV.name)}</span><span class="m-maker">${esc(t('dev.sub'))}</span></div>
-      <div class="m-status">${esc(devOnline() ? t('dev.online') : t('dev.offline'))}</div>
-    </div>`;
-  ul.append(dev);
-  const on = AI_IDS.filter((id) => S.members[id]?.enabled).length + (devOnline() ? 1 : 0);
+  const on = shownIds().filter((id) => S.members[id]?.enabled).length;
   $('#memberCount').textContent = `· ${on + 1}`;
 }
 
@@ -537,9 +508,9 @@ function renderTyping() {
   const box = $('#typing');
   box.innerHTML = '';
   if (!S.room.running) return;
-  const typing = AI_IDS.filter((id) => S.members[id]?.status === 'typing');
-  const drawing = AI_IDS.filter((id) => S.members[id]?.drawing);
-  const reading = AI_IDS.filter((id) => S.members[id]?.status === 'reading');
+  const typing = shownIds().filter((id) => S.members[id]?.status === 'typing');
+  const drawing = shownIds().filter((id) => S.members[id]?.drawing);
+  const reading = shownIds().filter((id) => S.members[id]?.status === 'reading');
   const group = (ids, key, cls) => {
     if (!ids.length) return;
     const g = el('span', `t ${cls}`);
@@ -588,10 +559,8 @@ function renderRoom() {
 }
 
 function renderHead() {
-  const on = AI_IDS.filter((id) => S.members[id]?.enabled).map(nameOf);
-  if (devOnline()) on.push(DEV.name);
+  const on = shownIds().filter((id) => S.members[id]?.enabled).map(nameOf);
   $('#headSub').textContent = [...on, nameOf('user')].join(t('list.sep'));
-  $('#devChip').hidden = !devOnline();
 }
 
 $('#power').onclick = () => api('/api/room', { running: !S.room.running }).catch(() => toast(t('toast.noServer')));
@@ -774,6 +743,7 @@ function renderStickerPop() {
   const groups = new Map();
   for (const f of list) {
     const who = f.path.split('/').length > 2 ? f.path.split('/')[1] : '';
+    if (S.members[who]?.hidden) continue;
     if (!groups.has(who)) groups.set(who, []);
     groups.get(who).push(f);
   }
@@ -882,8 +852,7 @@ function updateMention() {
   const m = upto.match(/@([\p{L}\p{N}_]*)$/u);
   if (!m) { closeMention(); return; }
   const q = norm(m[1]);
-  const ids = AI_IDS.filter((id) => S.members[id] && (!q || [nameOf(id), ...ALIASES[id]].some((a) => norm(a).startsWith(q))));
-  if (!q || [DEV.name, ...DEV.aliases].some((a) => norm(a).startsWith(q))) ids.push(DEV.id);
+  const ids = shownIds().filter((id) => S.members[id] && (!q || [nameOf(id), ...ALIASES[id]].some((a) => norm(a).startsWith(q))));
   if (!ids.length) { closeMention(); return; }
   S.mention = { start: upto.length - m[0].length, index: 0 };
   const pop = $('#mentionPop');
@@ -963,7 +932,7 @@ function renderWs() {
 function fileIcon(f) {
   const e = extOf(f.path);
   if (IMG_EXT.includes(e)) return `<span class="ic"><img src="${wsUrl(f.path, Math.round(f.mtime))}" alt="" loading="lazy"></span>`;
-  const label = { md: 'MD', txt: 'TXT', html: 'HTML', htm: 'HTML', json: 'JSON', csv: 'CSV', js: 'JS', mjs: 'JS', py: 'PY', css: 'CSS' }[e] || e.toUpperCase().slice(0, 4);
+  const label = { md: 'MD', txt: 'TXT', json: 'JSON', csv: 'CSV', js: 'JS', mjs: 'JS', py: 'PY', css: 'CSS' }[e] || e.toUpperCase().slice(0, 4);
   return `<span class="ic">${esc(label)}</span>`;
 }
 
@@ -1036,14 +1005,6 @@ async function renderViewer() {
     body.append(w);
     return;
   }
-  if (e === 'html' || e === 'htm') {
-    const fr = el('iframe');
-    fr.setAttribute('sandbox', WS_FRAME_SANDBOX);
-    fr.title = p;
-    fr.src = wsUrl(p, Math.round(f.mtime));
-    body.append(fr);
-    return;
-  }
   try {
     const r = await api(`/api/file?path=${encodeURIComponent(p)}`);
     if (S.openPath !== p) return;
@@ -1081,7 +1042,7 @@ function renderNotes(flashId) {
   box.innerHTML = '';
   box.append(el('div', 'ws-intro', esc(t('notes.intro'))));
   const wrap = el('div', 'notes');
-  for (const id of AI_IDS) {
+  for (const id of shownIds()) {
     const m = S.members[id];
     const card = el('div', `note-card${flashId === id ? ' flash' : ''}`);
     card.style.setProperty('--c', colorOf(id));
@@ -1166,7 +1127,7 @@ function renderUsage() {
   };
   head.append(intro, btn);
   const list = el('div', 'usage-list');
-  for (const id of AI_IDS) list.append(usageCard(id));
+  for (const id of shownIds()) list.append(usageCard(id));
   box.append(head, list);
 }
 

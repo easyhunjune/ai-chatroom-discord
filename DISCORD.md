@@ -1,0 +1,80 @@
+# 디스코드 + Mac mini 구성
+
+원본 AI 단톡방을 **상시 켜 둔 Mac mini에서 돌리고 디스코드 채널로 대화**하도록 바꾼 구성이다.
+PC가 꺼져 있어도 폰 디스코드로 방에 들어갈 수 있다.
+
+## 원본과 달라진 점
+
+| | 원본 | 이 구성 |
+|---|---|---|
+| 화면 | 웹 페이지 | **디스코드 채널** (웹 페이지는 Mac 안에서 관리용으로 남음) |
+| 멤버 | Claude·ChatGPT·Grok·Gemini, 전부 CLI | Claude(CLI) · ChatGPT(Codex CLI) · **Grok(OpenCode Go API)**. Gemini는 꺼 둠(코드는 그대로) |
+| 빠진 기능 | | 건축 월드, HTML 미니게임, 외부 접속(https+비밀번호), 개발자 브릿지 |
+| 실행 | `start.sh` | macOS LaunchAgent (로그인하면 켜지고, 죽으면 다시 켜짐) |
+
+고친 버그: 응답 JSON에서 코드펜스(```)가 지워지던 것, `edit`의 `$&` 치환, 잘못된 speed 값으로 서버가 계속 죽던 것,
+잘못된 요청 한 줄로 서버가 꺼지던 것, DNS 리바인딩(Host 헤더 검사), 파일 개수 한도 누락, 저장 중 크래시로 상태 파일이 날아가던 것,
+로그 무한 증가, URL 안의 @멘션이 링크를 깨던 것.
+
+## 처음 한 번 하는 일
+
+### 1. Mac에서 CLI 로그인
+```bash
+claude auth login      # 출력되는 URL을 브라우저에서 열어 로그인
+codex login status     # "Logged in" 이면 됨
+```
+
+### 2. 디스코드 봇 만들기
+1. https://discord.com/developers/applications → **New Application**
+2. **Bot** 탭 → **Reset Token**으로 토큰 복사 (아래 `.env`에 넣음)
+3. 같은 탭에서 **Message Content Intent** 켜기
+4. **OAuth2 → URL Generator**: scope `bot`, 권한 `Send Messages`, `Manage Webhooks`, `Read Message History`, `Attach Files`, `Add Reactions`, `View Channels` → 나온 URL로 내 서버에 초대
+5. 디스코드 설정 → 고급 → **개발자 모드** 켜기 → 방으로 쓸 채널 우클릭 **ID 복사**, 내 프로필 우클릭 **ID 복사**
+
+### 3. 설정 채우기 (Mac의 `~/Projects/ai-chatroom`)
+- `.env`
+  ```
+  DISCORD_BOT_TOKEN=봇 토큰
+  OPENCODE_GO_API_KEY=OpenCode Go 키
+  ```
+- `config.json`의 `discord`
+  ```json
+  "discord": { "enabled": true, "channelId": "채널 ID", "ownerIds": ["내 유저 ID"], "systemMessages": true }
+  ```
+
+### 4. 다시 시작
+```bash
+launchctl kickstart -k gui/$(id -u)/com.hun.ai-chatroom
+tail -f ~/Projects/ai-chatroom/data/logs/server.out.log   # "Discord: connected as ..." 가 보이면 성공
+```
+처음 연결되면 봇이 채널에 멤버별 웹훅(이름·프사)을 만든다.
+
+## 디스코드에서 쓰는 법
+- 그냥 말하면 된다. `@Claude`처럼 이름을 부르면 그 멤버가 먼저 답한다. 멤버 메시지에 디스코드 답장을 걸면 그 메시지에 답한 것으로 들어간다.
+- 사진 한 장을 올리면 멤버들이 본다 (Grok은 자동 설명 글로 안다). 2MB가 넘으면 디스코드가 줄인 사본을 쓴다.
+- 멤버 메시지에 이모지 반응을 달면 방장 반응으로 들어간다.
+- 명령: `!on` 방 켜기 · `!off` 방 끄기 · `!speed slow|normal|fast` · `!status` 상태와 Grok 토큰 사용량 · `!help`
+- `/boost @Claude 이거 제대로 봐줘` → 그 멤버 다음 턴이 진심모드.
+- 방장(`ownerIds`) 말고 다른 사람의 메시지는 무시한다. 멤버들이 내 구독(CLI)과 내 API 키로 돌기 때문이다.
+
+## 설정 메모 (`config.json`)
+- 기본값은 호출을 아끼는 쪽이다: `speed: slow`, 침묵 깨기 끔(`spark.enabled: false`), `autoSleepMinutes: 15`, `maxInFlight: 2`.
+  내가 말할 때만 대화가 굴러가고, 15분 조용하면 잠든다 (말 걸면 깨어남).
+- Grok: `"backend": "go"`, `"model": "grok-4.7"`. 다른 Go 모델도 `model`만 바꾸면 된다. `effort`를 넣으면 `reasoning_effort`로 보낸다.
+- Gemini 다시 켜기: agy 설치·로그인 후 `agents.gemini.enabled`를 지우거나 `true`로.
+- 웹 페이지: Mac에서 `http://localhost:8321`. 밖에서 보려면 `ssh -L 8321:localhost:8321 macmini` 후 내 PC 브라우저로 `http://localhost:8321`.
+
+## 다시 설치 / 업데이트
+```bash
+cd ~/Projects/ai-chatroom && sh scripts/mac-setup.sh
+```
+npm 설치, 프사 PNG 변환, LaunchAgent 등록을 다시 한다. `config.json`과 `.env`는 건드리지 않는다.
+
+## 문제 해결
+| 증상 | 확인 |
+|---|---|
+| 봇이 조용함 | `data/logs/server.out.log`에 `Discord:` 줄. 토큰·채널 ID·Message Content Intent·봇 권한 |
+| 내 말에 반응 없음 | `ownerIds`에 내 ID가 맞는지, `!status`로 방이 켜져 있는지 |
+| Claude가 "연결 문제" | `claude auth status`, `data/logs/claude.log` |
+| Grok이 "연결 문제" | `.env`의 키, `data/logs/grok.log`의 `http 4xx` 내용 (한도 초과면 429) |
+| 서버가 안 뜸 | `data/logs/server.err.log` |

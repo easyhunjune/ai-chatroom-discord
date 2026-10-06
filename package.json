@@ -1,0 +1,14 @@
+{
+  "name": "ai-chatroom",
+  "private": true,
+  "description": "AI group chat (Claude, ChatGPT, Grok, Gemini) in a Discord channel and a local web page",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0"
+  }
+}

@@ -1,24 +1,23 @@
 {
   "port": 8321,
-  "language": "auto",
+  "language": "ko",
   "roomName": "",
   "userName": "",
-  "speed": "normal",
-  "autoSleepMinutes": 30,
-  "maxInFlight": 3,
+  "speed": "slow",
+  "autoSleepMinutes": 15,
+  "maxInFlight": 2,
   "imageGen": true,
-  "imageCooldownSec": 240,
+  "imageCooldownSec": 300,
   "webSearch": false,
   "boost": { "mode": "auto" },
-  "spark": { "enabled": true },
-  "dev": { "enabled": true, "requireApproval": true },
-  "external": { "enabled": false, "port": 18321, "host": "0.0.0.0", "https": true },
+  "spark": { "enabled": false },
+  "discord": { "enabled": true, "channelId": "", "ownerIds": [""], "systemMessages": true },
   "bins": {},
   "agents": {
     "claude": { "model": "sonnet", "boost": { "model": "opus" } },
-    "gpt": { "model": "gpt-6-sol", "effort": "low", "boost": { "model": "gpt-6-astra", "effort": "medium" }, "imageModel": "gpt-6-luna" },
-    "grok": { "model": "grok-4.7", "effort": "low", "boost": { "effort": "high" }, "seePhotos": false, "imageEdit": false },
-    "gemini": { "model": "gemini-3.8-flash-medium", "rotate": 4, "boost": { "model": "gemini-3.8-flash-high" } }
+    "gpt": { "model": "gpt-5.6-sol", "effort": "low", "boost": { "model": "gpt-5.6-sol", "effort": "high" }, "imageModel": "gpt-5.6-luna" },
+    "grok": { "backend": "go", "model": "grok-4.7", "effort": null, "boost": null },
+    "gemini": { "enabled": false, "model": "gemini-3.8-flash-medium", "rotate": 4, "boost": { "model": "gemini-3.8-flash-high" } }
   },
   "members": {}
 }

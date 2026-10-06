@@ -1,29 +1,50 @@
-// AI 단톡방 — Claude, ChatGPT, Grok and Gemini chatting in one web room.
-// Zero-dependency Node server: static UI + SSE + one independent loop per AI.
+// AI 단톡방 — Claude, ChatGPT, Grok and Gemini chatting in one room, shown in a Discord
+// channel (lib/discord.mjs) and in a local web page (static UI + SSE). One independent
+// loop per AI.
 
 import http from 'node:http';
-import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { setLang, getLang, pick, LANG_DEFAULTS } from './lib/i18n.mjs';
-import { Store } from './lib/store.mjs';
+import { Store, MAX_FILES } from './lib/store.mjs';
 import { Adapters, killAll } from './lib/agents.mjs';
 import { UsageMonitor } from './lib/usage.mjs';
 import { buildBrief, buildTurn, parseAction, modelLabel } from './lib/prompt.mjs';
 import { Router } from './lib/router.mjs';
-import { AI_IDS, MEMBERS, DEV, displayName, mentions, atMentions, withJosa } from './lib/members.mjs';
-import { DevBridge, devChainState } from './lib/dev.mjs';
-import { ExternalGate } from './lib/external.mjs';
-import { World } from './lib/world.mjs';
-import { shootWorld } from './lib/worldshot.mjs';
+import { AI_IDS, MEMBERS, displayName, mentions, atMentions, withJosa } from './lib/members.mjs';
+import { DiscordBridge } from './lib/discord.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
+
+// Secrets (DISCORD_BOT_TOKEN, OPENCODE_GO_API_KEY) live in .env next to server.mjs, never in
+// config.json. Variables already set in the environment win.
+function loadEnv(file) {
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch { return; }
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (!m || m[1] in process.env) continue;
+    process.env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
+  }
+}
+loadEnv(path.join(ROOT, '.env'));
+
+// Log and keep going on a stray promise rejection; an uncaught exception still ends the
+// process (state may be inconsistent), and launchd / start.sh brings it back.
+process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
+process.on('uncaughtException', (e) => {
+  console.error('[uncaughtException]', e);
+  process.exit(1);
+});
 
 const DEFAULT_CFG = {
   port: 8321,
   host: '127.0.0.1',
+  // Host headers the web page may be reached under besides localhost / 127.0.0.1 / [::1]
+  // (e.g. a Tailscale name). Anything else is refused, which blocks DNS rebinding.
+  allowedHosts: [],
   // ko | en | ja | auto (OS language). Also decides the default roomName / userName.
   language: 'auto',
   roomName: '',
@@ -42,16 +63,17 @@ const DEFAULT_CFG = {
   usagePollIdleSec: 600,
   // 진심모드 (per-turn model routing, see lib/router.mjs)
   boost: { mode: 'auto', timeoutSec: 360, selfCooldownSec: 180, aiRequestCooldownSec: 180 },
-  // dev bridge (lib/dev.mjs): AI bubbles allowed after a dev message, and dev messages
-  // allowed without the user, before the AIs pause until the user speaks
-  dev: { enabled: true, replyCap: 6, roundsWithoutUser: 8 },
   // Breaking the silence: after SPEEDS[speed].spark seconds of quiet (or afterSec: [lo, hi]
   // if set) one member is picked; each pass multiplies the next wait by `backoff`, up to maxWaitSec.
   spark: { enabled: true, backoff: 1.6, maxWaitSec: 1800 },
-  // Second listener for the owner away from home (lib/external.mjs): password login,
-  // no dev bridge API. Off unless config.json turns it on.
-  external: { enabled: false, port: 18321, host: '0.0.0.0', https: true },
-  // model/effort = default; boost = what a 진심모드 turn overrides (null disables it)
+  // Discord channel (lib/discord.mjs). The bot token is DISCORD_BOT_TOKEN in .env. Only the
+  // Discord users in ownerIds talk as the room owner; everyone else in the channel is ignored
+  // (the members' CLIs run on the owner's own subscriptions, for the owner's own use).
+  discord: { enabled: true, channelId: '', ownerIds: [], systemMessages: true },
+  // OpenCode Go API for members with backend "go" (key: OPENCODE_GO_API_KEY in .env).
+  go: { baseUrl: 'https://opencode.ai/zen/go/v1' },
+  // model/effort = default; boost = what a 진심모드 turn overrides (null disables it).
+  // backend: "cli" (default) or "go"; enabled: false keeps a member out of the room.
   agents: {
     claude: { model: 'sonnet', boost: { model: 'opus' } },
     gpt: { model: 'gpt-6-sol', effort: 'low', boost: { model: 'gpt-6-astra', effort: 'medium' }, imageModel: 'gpt-6-luna' },
@@ -66,9 +88,9 @@ function loadConfig() {
   try { user = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* defaults */ }
   const cfg = { ...DEFAULT_CFG, ...user, agents: {} };
   cfg.boost = { ...DEFAULT_CFG.boost, ...(user.boost || {}) };
-  cfg.dev = { ...DEFAULT_CFG.dev, ...(user.dev || {}) };
   cfg.spark = { ...DEFAULT_CFG.spark, ...(user.spark || {}) };
-  cfg.external = { ...DEFAULT_CFG.external, ...(user.external || {}) };
+  cfg.discord = { ...DEFAULT_CFG.discord, ...(user.discord || {}) };
+  cfg.go = { ...DEFAULT_CFG.go, ...(user.go || {}) };
   // Older configs: ChatGPT-only deepModel / deepMode / deepTimeoutSec.
   if (user.deepMode && !user.boost?.mode) cfg.boost.mode = user.deepMode;
   if (user.deepTimeoutSec && !user.boost?.timeoutSec) cfg.boost.timeoutSec = user.deepTimeoutSec;
@@ -93,25 +115,13 @@ const HOME_DIR = process.env.CHATROOM_HOME ? path.resolve(process.env.CHATROOM_H
 if (process.env.PORT) cfg.port = Number(process.env.PORT);
 const store = new Store(HOME_DIR);
 const adapters = new Adapters(HOME_DIR, cfg);
-// Shared building world (lib/world.mjs), watched in public/world.html.
-const world = new World(HOME_DIR, AI_IDS);
 const avail = adapters.available();
-
-// Dev bridge: the development session joins the room as "개발자" (lib/dev.mjs).
-const devBridge = new DevBridge(HOME_DIR, {
-  store,
-  cfg,
-  post: (m) => post(m),
-  roomView: () => roomView(),
-  fileChanged: (r) => {
-    post({ from: 'system', kind: 'file', by: DEV.id, file: r.op === 'delete' ? undefined : r.rel, text: `${DEV.name} → ${r.rel} ${tx().verb[r.op] || r.op}` });
-    broadcast('ws', store.listFiles());
-  },
-  onPresence: (online) => {
-    post({ from: 'system', kind: 'dev', by: DEV.id, online, text: online ? tx().devIn() : tx().devOut() });
-    pushRoom();
-  },
-});
+// Disabled in config.json (agents.<id>.enabled: false): not shown, not in the roster.
+const hidden = (id) => cfg.agents[id]?.enabled === false;
+// Real image generation: the member's CLI has an image tool (API members don't).
+const canDraw = (id) => !!(MEMBERS[id].imageGen && cfg.imageGen && avail[id] && adapters.backend(id) === 'cli');
+// The Discord bridge, once started (see the bottom of this file). null = web page only.
+let discord = null;
 
 // Pacing presets. Seconds. `spark`: how long the room stays quiet before one member is
 // picked to break the silence (see maybeSpark).
@@ -128,6 +138,8 @@ const room = (store.state.room ??= {});
 room.running ??= false;
 room.sleeping ??= false;
 room.speed ??= cfg.speed;
+// A speed that isn't one of our presets (old state, a hand-edited file) would break tick().
+if (!Object.hasOwn(SPEEDS, room.speed)) room.speed = Object.hasOwn(SPEEDS, cfg.speed) ? cfg.speed : 'normal';
 room.boostMode ??= cfg.boost.mode;
 room.autoSleepMin ??= cfg.autoSleepMinutes;
 room.enabled ??= {};
@@ -143,6 +155,8 @@ for (const id of AI_IDS) {
     wakeAt: null, reason: null, idleAt: null, idleStreak: 0, lastEnd: 0,
     fails: 0, offlineUntil: 0, lastError: '', imageBusy: false, lastImageAt: 0, calls: 0, lastMs: 0,
     callTimes: [], lastSelfBoostAt: 0, deepNow: false,
+    // API members: tokens reported by the API since the server started
+    tokens: { in: 0, out: 0, cached: 0 },
   };
 }
 
@@ -166,14 +180,9 @@ const nameJ = (id, pair) => withJosa(id, cfg.userName, pair);
 // English and Japanese use the plain name.
 const T = {
   ko: {
-    devIn: () => `🛠 ${DEV.name} 들어옴 (개발 세션 연결)`,
-    devOut: () => `🛠 ${DEV.name} 나감`,
-    devPause: (why) => `⏸ ${why} 쌓여서 ${withJosa(cfg.userName, cfg.userName, '이/가')} 말할 때까지 다들 잠깐 쉬어`,
     boostOn: (id, model, why) => `🔥 ${name(id)} 진심모드 — ${model} · ${why}`,
     boostFail: (id, timeout) => `${name(id)} 진심모드가 ${timeout ? '너무 오래 걸려서' : '실패해서'} 기본 모델로 답할게`,
     selfBoost: (why) => `스스로 판단: ${why}`,
-    shotBlind: '(월드 스크린샷을 찍었는데 너한텐 사진이 안 보여)',
-    worldMap: '건축 월드 지도',
     cut: (n) => `\n…(${n}자 잘림)`,
     autoDesc: (d) => `자동 설명: ${d}`,
     artistPrompt: (p) => `그린 사람이 쓴 프롬프트: ${p}`,
@@ -182,17 +191,12 @@ const T = {
     verb: { create: '새로 만듦', write: '다시 씀', append: '내용 추가', edit: '수정', delete: '삭제' },
     fileFail: (id, err) => `${name(id)}의 파일 작업 실패: ${err}`,
     showMissing: (id, rel) => `${nameJ(id, '이/가')} 보여주려던 ${rel} 파일이 없어`,
-    newBlock: (id, n) => `🎨 ${name(id)} → 새 블록 ${n} 만듦`,
-    blockFail: (id, err) => `${name(id)}의 블록 만들기: ${err}`,
-    buildNotes: (id, notes) => `${name(id)}의 건축: ${notes}`,
     stickerSaved: (id, rel) => `${name(id)} → ${rel} 스티커로 저장`,
     stickerFail: (id, err) => `${name(id)}의 스티커 저장 실패: ${err}`,
     noImage: (rel) => `없는 그림 ${rel}`,
     stickerPath: '저장 경로는 stickers/멤버/이름.png 식이어야 해',
     stickerExt: '확장자가 원본이랑 같아야 해',
     fileLimit: '파일 개수 한도',
-    cameraLift: (id, x, y, z, fy) => `📸 ${name(id)} 카메라 칸 (${x},${y},${z})이 블록 안이라 (${x},${fy},${z})로 올려서 찍어`,
-    shotFail: (id, err) => `${name(id)}의 월드 스크린샷 실패: ${err}`,
     cantDraw: (id, busy, sec) => `${nameJ(id, '은/는')} 아직 그림을 못 그려 (${busy ? '그리는 중' : `${sec}초 뒤 가능`})`,
     drawing: (id) => `🎨 ${name(id)} 그림 그리는 중…`,
     drawFail: (id) => `${name(id)}의 그림 생성 실패`,
@@ -211,9 +215,6 @@ const T = {
     left: (id) => `${name(id)} 잠깐 나감`,
     sep: ', ',
     welcome: (members) => `${withJosa(cfg.roomName, cfg.userName, '이/가')} 열렸어. 멤버: ${members}, 그리고 ${cfg.userName}.`,
-    extPortFail: (err) => `외부 접속 포트를 못 열었어: ${err}`,
-    extOn: (proto, port) => `외부 접속 → ${proto}://<공인 IP>:${port} (비밀번호: data/external-password.txt)`,
-    extFail: (err) => `외부 접속을 못 켰어: ${err}`,
     portBusy: (port, code) => `포트 ${port}을(를) 못 열었어 (${code}). 방이 이미 켜져 있거나, 다른 프로그램이 쓰거나, 막힌 포트야.`,
     portHint: 'config.json의 "port"를 바꾸거나 setup(setup.bat / ./setup.sh)을 다시 실행해서 빈 포트를 골라 줘.',
     listening: (url) => `AI 단톡방 → ${url}`,
@@ -221,14 +222,9 @@ const T = {
     cliHint: '설치·로그인은 setup.bat(Windows) / ./setup.sh(macOS·Linux)가 도와줘.',
   },
   en: {
-    devIn: () => `🛠 ${DEV.name} joined (dev session connected)`,
-    devOut: () => `🛠 ${DEV.name} left`,
-    devPause: (why) => `⏸ ${why}, so everyone's taking a break until ${cfg.userName} says something`,
     boostOn: (id, model, why) => `🔥 ${name(id)} Boost mode — ${model} · ${why}`,
     boostFail: (id, timeout) => `${name(id)}'s Boost mode ${timeout ? 'took too long' : 'failed'}, so it's answering with the default model`,
     selfBoost: (why) => `self-requested: ${why}`,
-    shotBlind: "(You took a world screenshot, but you can't see pictures.)",
-    worldMap: 'Build World map',
     cut: (n) => `\n…(${n} more characters cut)`,
     autoDesc: (d) => `Auto description: ${d}`,
     artistPrompt: (p) => `Prompt the artist used: ${p}`,
@@ -237,17 +233,12 @@ const T = {
     verb: { create: 'created', write: 'rewritten', append: 'appended', edit: 'edited', delete: 'deleted' },
     fileFail: (id, err) => `${name(id)}'s file operation failed: ${err}`,
     showMissing: (id, rel) => `${name(id)} tried to show ${rel}, but that file doesn't exist`,
-    newBlock: (id, n) => `🎨 ${name(id)} → made a new block ${n}`,
-    blockFail: (id, err) => `${name(id)} couldn't make the block: ${err}`,
-    buildNotes: (id, notes) => `${name(id)}'s build: ${notes}`,
     stickerSaved: (id, rel) => `${name(id)} → saved ${rel} as a sticker`,
     stickerFail: (id, err) => `${name(id)} couldn't save the sticker: ${err}`,
     noImage: (rel) => `No such image ${rel}`,
     stickerPath: 'The save path must look like stickers/member/name.png',
     stickerExt: 'The extension must match the original',
     fileLimit: 'File limit reached',
-    cameraLift: (id, x, y, z, fy) => `📸 ${name(id)}'s camera spot (${x},${y},${z}) is inside a block, so it moves up to (${x},${fy},${z}) for the shot`,
-    shotFail: (id, err) => `${name(id)}'s world screenshot failed: ${err}`,
     cantDraw: (id, busy, sec) => `${name(id)} can't draw yet (${busy ? 'still drawing' : `ready in ${sec}s`})`,
     drawing: (id) => `🎨 ${name(id)} is drawing…`,
     drawFail: (id) => `${name(id)}'s image generation failed`,
@@ -266,9 +257,6 @@ const T = {
     left: (id) => `${name(id)} stepped out for a bit`,
     sep: ', ',
     welcome: (members) => `${cfg.roomName} is open. Members: ${members}, and ${cfg.userName}.`,
-    extPortFail: (err) => `Couldn't open the external access port: ${err}`,
-    extOn: (proto, port) => `External access → ${proto}://<public IP>:${port} (password: data/external-password.txt)`,
-    extFail: (err) => `Couldn't turn on external access: ${err}`,
     portBusy: (port, code) => `Couldn't open port ${port} (${code}). The room may already be running, another program may be using it, or the port is blocked.`,
     portHint: 'Change "port" in config.json, or run setup again (setup.bat / ./setup.sh) to pick a free port.',
     listening: (url) => `AI Group Chat → ${url}`,
@@ -276,14 +264,9 @@ const T = {
     cliHint: 'setup.bat (Windows) / ./setup.sh (macOS, Linux) helps with installing and logging in.',
   },
   ja: {
-    devIn: () => `🛠 ${DEV.name}が入ってきた(開発セッション接続)`,
-    devOut: () => `🛠 ${DEV.name}が抜けた`,
-    devPause: (why) => `⏸ ${why}から、${cfg.userName}が話すまでみんなちょっと休憩ね`,
     boostOn: (id, model, why) => `🔥 ${name(id)} 本気モード — ${model} · ${why}`,
     boostFail: (id, timeout) => `${name(id)}の本気モードが${timeout ? '時間かかりすぎた' : '失敗した'}から、いつものモデルで答えるね`,
     selfBoost: (why) => `自分で判断: ${why}`,
-    shotBlind: '(ワールドのスクショを撮ったけど、自分には画像が見えない)',
-    worldMap: '建築ワールドの地図',
     cut: (n) => `\n…(${n}文字省略)`,
     autoDesc: (d) => `自動説明: ${d}`,
     artistPrompt: (p) => `描いた人が書いたプロンプト: ${p}`,
@@ -292,17 +275,12 @@ const T = {
     verb: { create: '新規作成', write: '書き直し', append: '追記', edit: '修正', delete: '削除' },
     fileFail: (id, err) => `${name(id)}のファイル操作が失敗: ${err}`,
     showMissing: (id, rel) => `${name(id)}が見せようとした ${rel} ってファイルはないよ`,
-    newBlock: (id, n) => `🎨 ${name(id)} → 新しいブロック ${n} を作った`,
-    blockFail: (id, err) => `${name(id)}のブロック作り: ${err}`,
-    buildNotes: (id, notes) => `${name(id)}の建築: ${notes}`,
     stickerSaved: (id, rel) => `${name(id)} → ${rel} をスタンプに保存`,
     stickerFail: (id, err) => `${name(id)}のスタンプ保存が失敗: ${err}`,
     noImage: (rel) => `画像 ${rel} がない`,
     stickerPath: '保存先は stickers/メンバー/名前.png の形にして',
     stickerExt: '拡張子は元のファイルと同じにして',
     fileLimit: 'ファイル数の上限',
-    cameraLift: (id, x, y, z, fy) => `📸 ${name(id)}のカメラ位置 (${x},${y},${z}) がブロックの中だから、(${x},${fy},${z}) まで上げて撮るね`,
-    shotFail: (id, err) => `${name(id)}のワールドのスクショが失敗: ${err}`,
     cantDraw: (id, busy, sec) => `${name(id)}はまだ絵を描けない(${busy ? '描いてる途中' : `あと${sec}秒`})`,
     drawing: (id) => `🎨 ${name(id)}が絵を描いてる…`,
     drawFail: (id) => `${name(id)}の画像生成が失敗`,
@@ -321,9 +299,6 @@ const T = {
     left: (id) => `${name(id)}がちょっと抜けた`,
     sep: '、',
     welcome: (members) => `${cfg.roomName}がオープンしたよ。メンバー: ${members}、それと${cfg.userName}。`,
-    extPortFail: (err) => `外部アクセス用のポートを開けなかった: ${err}`,
-    extOn: (proto, port) => `外部アクセス → ${proto}://<グローバルIP>:${port} (パスワード: data/external-password.txt)`,
-    extFail: (err) => `外部アクセスをオンにできなかった: ${err}`,
     portBusy: (port, code) => `ポート${port}を開けなかった(${code})。ルームがもう動いてるか、ほかのプログラムが使ってるか、ブロックされてるポートだよ。`,
     portHint: 'config.jsonの"port"を変えるか、setup(setup.bat / ./setup.sh)をもう一回実行して空いてるポートを選んで。',
     listening: (url) => `AIグループチャット → ${url}`,
@@ -352,9 +327,9 @@ function memberView(id) {
   else if (Date.now() < a.offlineUntil) status = 'error';
   return {
     id, name: MEMBERS[id].name, maker: MEMBERS[id].maker, color: MEMBERS[id].color,
-    model: cfg.agents[id].model, imageGen: MEMBERS[id].imageGen && cfg.imageGen,
+    model: cfg.agents[id].model, imageGen: canDraw(id), backend: adapters.backend(id), hidden: hidden(id),
     status, drawing: a.imageBusy, enabled: room.enabled[id], available: avail[id],
-    calls: a.calls, lastMs: a.lastMs, lastError: a.lastError,
+    calls: a.calls, lastMs: a.lastMs, lastError: a.lastError, tokens: a.tokens,
     deep: !!a.deepNow, defaultModel: defaultLabel(id), boostModel: hasBoost(id) ? boostLabel(id) : null,
   };
 }
@@ -362,7 +337,6 @@ function roomView() {
   return {
     running: room.running, sleeping: room.sleeping, speed: room.speed, autoSleepMin: room.autoSleepMin,
     calls: room.calls, roomName: cfg.roomName, userName: cfg.userName, lang: getLang(), boostMode: boostMode(),
-    dev: { online: devBridge.online },
   };
 }
 function pushMembers() { broadcast('members', AI_IDS.map(memberView)); }
@@ -371,18 +345,21 @@ function setStatus(a, status) {
   if (a.status === status) return;
   a.status = status;
   pushMembers();
+  if (status === 'typing') discord?.typing();
 }
 
 function post(m) {
   const msg = store.addMessage(m);
   broadcast('msg', msg);
-  devBridge.notify(msg);
+  discord?.onPost(msg);
   return msg;
 }
 
 function react(targetId, by, emoji) {
   const msg = store.applyReaction(targetId, by, emoji);
-  if (msg) broadcast('msgupdate', msg);
+  if (!msg) return;
+  broadcast('msgupdate', msg);
+  if (by !== 'user') discord?.onReact(msg, emoji);
 }
 
 // ---------------------------------------------------------------------------
@@ -400,20 +377,13 @@ function tick() {
   const last = store.lastMessage();
   const quietMs = now - Math.max(last?.ts ?? 0, room.startedAt ?? 0);
   const aiBubbles = store.recent(60).filter((m) => AI_IDS.includes(m.from) && now - m.ts < 60000).length;
-  // Dev <-> AI back-and-forth guard: while it holds, only the user's messages wake the AIs.
-  const chain = cfg.dev.enabled ? devChainState(store.recent(80), now, { ...cfg.dev, userName: cfg.userName }) : null;
-  noteDevPause(chain);
-  if (!chain) maybeSpark(now, sp);
+  maybeSpark(now, sp);
 
   for (const id of shuffle([...AI_IDS])) {
     const a = agents[id];
     if (!isActive(id) || a.busy || now < a.offlineUntil) continue;
 
     const fresh = store.after(a.seen).filter((m) => m.from !== id);
-    if (chain && !fresh.some((m) => m.from === 'user')) {
-      a.wakeAt = null;
-      continue;
-    }
     if (!adapters.canSee(id) && waitingForDesc(fresh, now)) continue;
     if (fresh.length) {
       a.idleStreak = 0;
@@ -522,15 +492,6 @@ function isCalled(m, id) {
   return !named.length || named.includes(id);
 }
 
-// Tell the room once per dev message when the back-and-forth guard kicks in (checked
-// against the log, so a server restart does not repeat it).
-function noteDevPause(chain) {
-  if (!chain) return;
-  const lastDev = [...store.recent(80)].reverse().find((m) => m.from === DEV.id);
-  if (!lastDev || store.after(lastDev.id).some((m) => m.kind === 'pause')) return;
-  post({ from: 'system', kind: 'pause', text: tx().devPause(chain.why) });
-}
-
 function shuffle(arr) {
   for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -589,13 +550,14 @@ async function ask(a, reason, openFile, deep = null) {
   const ups = canSee && !openFile ? unseenUploads(a) : [];
   const images = openFile?.image ? [openFile.image] : ups.map((m) => store.abs(m.attach.path));
   const attached = new Set(ups.map((m) => m.id));
-  const brief = buildBrief(a.id, cfg, { deep, mode: boostMode(), devOnline: devBridge.online, canSee });
+  const active = AI_IDS.filter(isActive);
+  const brief = buildBrief(a.id, cfg, { deep, mode: boostMode(), canSee, active, canDraw: canDraw(a.id) });
   const max = adapters.maxPromptChars(a.id) - brief.length - 200;
   const deepWait = !deep && hasBoost(a.id) && boostMode() === 'auto' ? selfBoostWait(a) : 0;
   let hist = cfg.historyForPrompt;
   let turn;
   for (;;) {
-    turn = buildTurn(a.id, { store, cfg: { ...cfg, historyForPrompt: hist }, agent: a, reason, openFile, deepWait, canSee, attached, world: world.summary(a.id, name) });
+    turn = buildTurn(a.id, { store, cfg: { ...cfg, historyForPrompt: hist }, agent: a, reason, openFile, deepWait, canSee, attached });
     if (turn.length <= max || hist <= 8) break;
     hist -= 8;
   }
@@ -608,7 +570,9 @@ async function ask(a, reason, openFile, deep = null) {
   pushUsageSoon();
   const res = await adapters.chat(a.id, brief, turn, { boost: !!deep, images });
   a.lastMs = res.ms;
-  store.log(a.id, `turn reason=${reason} model=${deep ? `${boostLabel(a.id)} BOOST` : defaultLabel(a.id)}${images.length ? ` images=${images.length}` : ''} ms=${res.ms} ok=${res.ok}\n${res.text.slice(0, 4000)}${res.detail ? `\nDETAIL ${res.detail}` : ''}`);
+  if (res.usage) for (const k of ['in', 'out', 'cached']) a.tokens[k] += res.usage[k] || 0;
+  const tok = res.usage ? ` tokens=${res.usage.in}/${res.usage.out}${res.usage.cached ? ` cached=${res.usage.cached}` : ''}` : '';
+  store.log(a.id, `turn reason=${reason} model=${deep ? `${boostLabel(a.id)} BOOST` : defaultLabel(a.id)}${images.length ? ` images=${images.length}` : ''} ms=${res.ms}${tok} ok=${res.ok}\n${res.text.slice(0, 4000)}${res.detail ? `\nDETAIL ${res.detail}` : ''}`);
   if (!res.ok) throw new Error(res.detail || 'empty reply');
   const act = parseAction(res.text);
   if (!act) store.log(a.id, 'could not parse a JSON action');
@@ -645,23 +609,6 @@ async function runTurn(a) {
         act = r.act;
         deep = r.deep;
       }
-    }
-    // world_shot: photograph the 3D world, post it, and show it to the member (like "open").
-    if (act?.world_shot && room.running) {
-      const shot = await takeWorldShot(a.id, act.world_shot);
-      if (shot) {
-        r = await askRouted(a, 'open', adapters.canSee(a.id) ? { rel: shot, image: store.abs(shot) } : { rel: shot, text: tx().shotBlind }, deep);
-        act = r.act || act;
-        deep = r.deep;
-      }
-      if (act) delete act.world_shot;
-    }
-    // world_look: hand over a text map of the building world and ask again (like "open").
-    if (act?.world_look && room.running) {
-      r = await askRouted(a, 'open', { rel: tx().worldMap, text: world.look(act.world_look) }, deep);
-      act = r.act || act;
-      deep = r.deep;
-      if (act) delete act.world_look;
     }
     if (act?.open && room.running) {
       try {
@@ -782,37 +729,6 @@ async function perform(a, act, snapshot, reason, meta = {}) {
     }
   }
 
-  // Building world: blocks first, then where the member stands (by default next to what it
-  // just built, so the viewer shows who is working where).
-  let moved = false;
-  // New blocks first, so the same turn can build with them.
-  for (const def of (Array.isArray(act.block_define) ? act.block_define : act.block_define ? [act.block_define] : []).slice(0, 4)) {
-    try {
-      const n = world.define(def, id);
-      broadcast('worldblocks', world.custom);
-      post({ from: 'system', kind: 'world', by: id, text: tx().newBlock(id, n) });
-      visible = true;
-    } catch (e) {
-      post({ from: 'system', kind: 'error', by: id, text: tx().blockFail(id, e.message) });
-    }
-  }
-  if (act.build) {
-    const r = world.apply(act.build, id);
-    if (r.changes.length) {
-      broadcast('world', { by: id, changes: r.changes });
-      const last = r.changes[r.changes.length - 1];
-      if (!act.move) moved = world.move(id, { x: last[0], z: last[2] + 1 });
-    }
-    if (r.signs) broadcast('signs', world.signs);
-    if (r.changes.length || r.signs) {
-      post({ from: 'system', kind: 'world', by: id, text: `🧱 ${name(id)} ${world.log[world.log.length - 1].text}` });
-      visible = true;
-    }
-    if (r.notes.length) post({ from: 'system', kind: 'error', by: id, text: tx().buildNotes(id, r.notes.slice(0, 3).join(' / ')) });
-  }
-  if (act.move) moved = world.move(id, act.move) || moved;
-  if (moved) broadcast('avatars', world.avatarView());
-
   if (act.sticker_save && typeof act.sticker_save === 'object') {
     try {
       const r = saveSticker(act.sticker_save.from, act.sticker_save.to, id);
@@ -834,7 +750,7 @@ async function perform(a, act, snapshot, reason, meta = {}) {
     }
   }
 
-  if (act.image && MEMBERS[id].imageGen && cfg.imageGen) {
+  if (act.image && canDraw(id)) {
     const req = imageRequest(act.image);
     if (req) {
       startImage(a, req);
@@ -864,69 +780,11 @@ function saveSticker(from, to, by) {
   if (!dst) throw new Error(tx().stickerPath);
   if (path.posix.extname(dst).toLowerCase() !== path.posix.extname(src).toLowerCase()) throw new Error(tx().stickerExt);
   const existed = fs.existsSync(store.abs(dst));
-  if (!existed && store.listFiles().length >= 300) throw new Error(tx().fileLimit);
+  if (!existed && store.listFiles().length >= MAX_FILES) throw new Error(tx().fileLimit);
   fs.mkdirSync(path.dirname(store.abs(dst)), { recursive: true });
   fs.copyFileSync(store.abs(src), store.abs(dst));
   store.touchMeta(dst, by, !existed);
   return dst;
-}
-
-// Screenshot of the 3D world for a member (lib/worldshot.mjs). Returns the workspace path
-// of the PNG, or null (the failure is posted to the room).
-async function takeWorldShot(id, req) {
-  const v = req && typeof req === 'object' ? req : {};
-  const num = (x) => (Number.isFinite(Number(x)) ? Number(x) : undefined);
-  const at = Array.isArray(v.at) ? v.at : [v.x, v.z];
-  const vec = (a, n) => (Array.isArray(a) && a.length === n && a.every((x) => num(x) !== undefined) ? a.map(Number) : null);
-  const from = vec(v.from, 3), lookAt = vec(v.look_at, 3), quat = vec(v.quat, 4);
-  // A camera placed inside a block only sees that block's inside: lift it to the first
-  // free cell above and say so.
-  if (from) {
-    const [fx, fy0, fz] = from.map(Math.round);
-    let fy = Math.max(1, fy0);
-    const solid = (y) => { const b = world.blocks.get(`${fx},${y},${fz}`); return b && !String(b).startsWith('door'); };
-    while (fy < 40 && solid(fy)) fy++;
-    if (fy !== from[1]) {
-      post({ from: 'system', kind: 'world', by: id, text: tx().cameraLift(id, fx, from[1], fz, fy) });
-      from[1] = fy;
-    }
-  }
-  const opts = {
-    night: v.night === true || v.night === 'true' || v.night === 1,
-    view: v.view === 'top' ? 'top' : 'iso',
-    // orbit camera: look at (at) from dist away, angle around it, pitch above the horizon
-    tx: num(at[0]) !== undefined ? num(at[0]) + 0.5 : undefined,
-    tz: num(at[1]) !== undefined ? num(at[1]) + 0.5 : undefined,
-    dist: num(v.dist),
-    angle: num(v.angle),
-    elev: from ? undefined : num(v.pitch),
-    // free camera: stand in a cell and look somewhere
-    cx: from?.[0], cy: from?.[1], cz: from?.[2],
-    lx: lookAt?.[0], ly: lookAt?.[1], lz: lookAt?.[2],
-    yaw: from ? num(v.yaw) : undefined,
-    pitch: from ? num(v.pitch) : undefined,
-    qx: quat?.[0], qy: quat?.[1], qz: quat?.[2], qw: quat?.[3],
-    fov: num(v.fov),
-    cut: num(v.cut_y),
-  };
-  setStatus(agents[id], 'reading');
-  try {
-    const png = await shootWorld(HOME_DIR, cfg.port, opts);
-    const d = new Date();
-    const p2 = (n) => String(n).padStart(2, '0');
-    let rel = `images/world-${id}-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}.png`;
-    for (let i = 2; fs.existsSync(store.abs(rel)); i++) rel = rel.replace(/(-\d+)?\.png$/, `-${i}.png`);
-    fs.mkdirSync(path.dirname(store.abs(rel)), { recursive: true });
-    fs.writeFileSync(store.abs(rel), png);
-    store.touchMeta(rel, id, true);
-    post({ from: id, text: '', attach: { path: rel, shot: true } });
-    broadcast('ws', store.listFiles());
-    return rel;
-  } catch (e) {
-    store.log(id, `world_shot failed: ${e.message}`);
-    post({ from: 'system', kind: 'error', by: id, text: tx().shotFail(id, e.message) });
-    return null;
-  }
 }
 
 // What the image generators may draw a member from (looks only): a character sheet in
@@ -956,6 +814,10 @@ async function startImage(a, req) {
   const wait = cfg.imageCooldownSec * 1000 - (Date.now() - a.lastImageAt);
   if (a.imageBusy || wait > 0) {
     post({ from: 'system', kind: 'error', by: id, text: tx().cantDraw(id, a.imageBusy, Math.ceil(wait / 1000)) });
+    return;
+  }
+  if (store.listFiles().length >= MAX_FILES) {
+    post({ from: 'system', kind: 'error', by: id, text: `${tx().drawFail(id)} (${tx().fileLimit})` });
     return;
   }
   a.imageBusy = true;
@@ -1057,6 +919,8 @@ function sendJson(res, code, obj) {
   res.end(JSON.stringify(obj));
 }
 
+// Resolves to a JSON object (anything else is a 'bad json' error). A client that hangs up
+// mid-body rejects instead of leaving the promise pending.
 function readBody(req, limit = 200000) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -1066,13 +930,20 @@ function readBody(req, limit = 200000) {
       if (size > limit) { reject(new Error('too large')); req.destroy(); }
       else chunks.push(d);
     });
+    req.on('error', reject);
+    req.on('aborted', () => reject(new Error('aborted')));
     req.on('end', () => {
-      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); } catch (e) { reject(e); }
+      try {
+        const v = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+        if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('bad json');
+        resolve(v);
+      } catch (e) { reject(e); }
     });
   });
 }
 
-// The user's photo attachments: base64 in the /api/send JSON, stored under images/.
+// The user's photo attachments (base64 in the /api/send JSON, or downloaded from Discord),
+// stored under images/.
 const UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
 const UPLOAD_BODY_LIMIT = Math.ceil(UPLOAD_MAX_BYTES * 4 / 3) + 16384;
 
@@ -1085,15 +956,13 @@ function sniffImage(buf) {
   return null;
 }
 
-// Returns the workspace path of the saved image, or throws with a message for the user.
-function saveUpload(img) {
-  const b64 = String(img?.data ?? '').replace(/^data:[^,]*,/, '');
-  const buf = Buffer.from(b64, 'base64');
-  if (!buf.length) throw new Error(tx().imgEmpty);
+// Returns the workspace path of the saved image (a Buffer), or throws with a message for the user.
+function saveUpload(buf) {
+  if (!buf?.length) throw new Error(tx().imgEmpty);
   if (buf.length > UPLOAD_MAX_BYTES) throw new Error(tx().imgTooBig(UPLOAD_MAX_BYTES / 1048576));
   const ext = sniffImage(buf);
   if (!ext) throw new Error(tx().imgType);
-  if (store.listFiles().length >= 300) throw new Error(tx().imgLimit);
+  if (store.listFiles().length >= MAX_FILES) throw new Error(tx().imgLimit);
   const d = new Date();
   const p2 = (n) => String(n).padStart(2, '0');
   const stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
@@ -1123,6 +992,63 @@ async function describeUpload(msg) {
 }
 const waitingForDesc = (fresh, now) => fresh.some((m) => describing.has(m.id) && now - m.ts < DESC_WAIT_MS);
 
+// A message from the room owner, typed in the web page or in Discord. Returns
+// {ok, msg, running} or {ok: false, error} (error text is for the owner).
+// image: Buffer of a photo; sticker: workspace path under stickers/; replyTo: room message id;
+// via: 'web' | 'discord' (Discord doesn't echo its own messages back).
+function userSend({ text = '', image = null, sticker = null, replyTo, via } = {}) {
+  const from = { from: 'user', ...(via ? { via } : {}) };
+  if (sticker) {
+    const rel = stickerPath(sticker);
+    if (!rel || !fs.existsSync(store.abs(rel))) return { ok: false, error: tx().noSticker };
+    room.lastUserAt = Date.now();
+    const msg = post({ ...from, text: '', attach: { path: rel, sticker: true } });
+    if (!room.running && room.sleeping) startRoom();
+    return { ok: true, msg, running: room.running };
+  }
+  text = String(text ?? '').trim().slice(0, 4000);
+  if (!text && !image) return { ok: false, error: 'empty' };
+  room.lastUserAt = Date.now();
+  // "/boost @멤버 [할 말]": that member's next turn runs on its boost settings.
+  const cmd = Router.parseCommand(text);
+  if (cmd) {
+    if (!cmd.ids.length) return { ok: false, error: tx().boostWho };
+    if (boostMode() === 'off') return { ok: false, error: tx().boostOff };
+    const ids = cmd.ids.filter((id) => hasBoost(id));
+    if (!ids.length) return { ok: false, error: tx().boostNone };
+    for (const id of ids) router.arm(id);
+    post({ from: 'system', kind: 'deep', text: tx().boostArmed(ids.map(name).join(tx().sep)) });
+    if (!room.running && room.sleeping) startRoom();
+    if (!cmd.rest && !image) return { ok: true, running: room.running };
+    text = `${ids.map((id) => `@${MEMBERS[id].name}`).join(' ')} ${cmd.rest}`.trim();
+  }
+  let attach;
+  if (image) {
+    try { attach = { path: saveUpload(image), upload: true }; } catch (e) { return { ok: false, error: e.message }; }
+    broadcast('ws', store.listFiles());
+  }
+  const rid = Number(replyTo);
+  const msg = post({ ...from, text, replyTo: store.byId.has(rid) ? rid : undefined, attach });
+  if (attach) describeUpload(msg);
+  if (!room.running && room.sleeping) startRoom();
+  return { ok: true, msg, running: room.running };
+}
+
+function setSpeed(s) {
+  if (typeof s !== 'string' || !Object.hasOwn(SPEEDS, s)) return false;
+  room.speed = s;
+  return true;
+}
+
+// The page is only served under localhost names (plus config allowedHosts). A DNS
+// rebinding page reaches us under its own host name, so it is refused here.
+function hostAllowed(req) {
+  const host = String(req.headers.host || '').toLowerCase();
+  const bare = host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : host.split(':')[0];
+  if (['localhost', '127.0.0.1', '[::1]'].includes(bare)) return true;
+  return (cfg.allowedHosts || []).some((h) => { const x = String(h).toLowerCase(); return x === host || x === bare; });
+}
+
 // Only the room page itself may call the API (blocks workspace mini-apps and other sites).
 function trustedPost(req) {
   if (!(req.headers['content-type'] || '').startsWith('application/json')) return false;
@@ -1141,9 +1067,6 @@ async function handleApi(req, res, url) {
       files: store.listFiles(),
       usage: usageView(),
     });
-  }
-  if (req.method === 'GET' && p === '/api/world') {
-    return sendJson(res, 200, world.view());
   }
   if (req.method === 'GET' && p === '/api/notes') {
     return sendJson(res, 200, Object.fromEntries(AI_IDS.map((id) => [id, store.readNote(id)])));
@@ -1172,42 +1095,11 @@ async function handleApi(req, res, url) {
     return sendJson(res, e.message === 'too large' ? 413 : 400, { error: e.message === 'too large' ? tx().tooLarge : 'bad json' });
   }
 
-  if (p === '/api/send' && body.sticker) {
-    const rel = stickerPath(body.sticker);
-    if (!rel || !fs.existsSync(store.abs(rel))) return sendJson(res, 400, { error: tx().noSticker });
-    room.lastUserAt = Date.now();
-    const msg = post({ from: 'user', text: '', attach: { path: rel, sticker: true } });
-    if (!room.running && room.sleeping) startRoom();
-    return sendJson(res, 200, { ok: true, msg, running: room.running });
-  }
   if (p === '/api/send') {
-    let text = String(body.text ?? '').trim().slice(0, 4000);
-    const hasImage = !!body.image?.data;
-    if (!text && !hasImage) return sendJson(res, 400, { error: 'empty' });
-    room.lastUserAt = Date.now();
-    // "/boost @멤버 [할 말]": that member's next turn runs on its boost settings.
-    const cmd = Router.parseCommand(text);
-    if (cmd) {
-      if (!cmd.ids.length) return sendJson(res, 400, { error: tx().boostWho });
-      if (boostMode() === 'off') return sendJson(res, 400, { error: tx().boostOff });
-      const ids = cmd.ids.filter((id) => hasBoost(id));
-      if (!ids.length) return sendJson(res, 400, { error: tx().boostNone });
-      for (const id of ids) router.arm(id);
-      post({ from: 'system', kind: 'deep', text: tx().boostArmed(ids.map(name).join(tx().sep)) });
-      if (!room.running && room.sleeping) startRoom();
-      if (!cmd.rest && !hasImage) return sendJson(res, 200, { ok: true, running: room.running });
-      text = `${ids.map((id) => `@${MEMBERS[id].name}`).join(' ')} ${cmd.rest}`.trim();
-    }
-    let attach;
-    if (hasImage) {
-      try { attach = { path: saveUpload(body.image), upload: true }; } catch (e) { return sendJson(res, 400, { error: e.message }); }
-      broadcast('ws', store.listFiles());
-    }
-    const replyTo = Number(body.replyTo);
-    const msg = post({ from: 'user', text, replyTo: store.byId.has(replyTo) ? replyTo : undefined, attach });
-    if (attach) describeUpload(msg);
-    if (!room.running && room.sleeping) startRoom();
-    return sendJson(res, 200, { ok: true, msg, running: room.running });
+    const image = body.image?.data ? Buffer.from(String(body.image.data).replace(/^data:[^,]*,/, ''), 'base64') : null;
+    const r = userSend({ text: body.text, image, sticker: body.sticker, replyTo: body.replyTo, via: 'web' });
+    if (!r.ok) return sendJson(res, 400, { error: r.error });
+    return sendJson(res, 200, { ok: true, msg: r.msg, running: r.running });
   }
   if (p === '/api/react') {
     const emoji = String(body.emoji ?? '').slice(0, 8);
@@ -1216,7 +1108,7 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { ok: true });
   }
   if (p === '/api/room') {
-    if (typeof body.speed === 'string' && SPEEDS[body.speed]) room.speed = body.speed;
+    setSpeed(body.speed);
     if (['auto', 'manual', 'off'].includes(body.boostMode)) room.boostMode = body.boostMode;
     if (Number.isFinite(body.autoSleepMin)) room.autoSleepMin = Math.max(0, Math.min(600, body.autoSleepMin));
     if (body.running === true && !room.running) startRoom();
@@ -1228,11 +1120,11 @@ async function handleApi(req, res, url) {
   }
   if (p === '/api/usage/refresh') {
     const fresh = Date.now() - usage.lastPoll < 15000;
-    if (!usage.polling && !fresh) usage.pollAll();
+    if (!usage.polling && !fresh) usage.pollAll(usageIds());
     return sendJson(res, 200, { ok: true, polling: true });
   }
   if (p === '/api/member') {
-    if (AI_IDS.includes(body.id) && typeof body.enabled === 'boolean') {
+    if (AI_IDS.includes(body.id) && !hidden(body.id) && typeof body.enabled === 'boolean') {
       room.enabled[body.id] = body.enabled;
       const a = agents[body.id];
       if (body.enabled) {
@@ -1260,7 +1152,8 @@ function serveStatic(res, file, extraHeaders = {}) {
       'Cache-Control': 'no-cache',
       ...extraHeaders,
     });
-    fs.createReadStream(file).pipe(res);
+    // The file can vanish or be locked between stat and open (a member deleting it).
+    fs.createReadStream(file).on('error', () => res.destroy()).pipe(res);
   });
 }
 
@@ -1280,10 +1173,12 @@ function pathOf(url) {
 }
 
 async function handleRequest(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const p = pathOf(url);
-  if (p === null) { res.writeHead(400); res.end(); return; }
   try {
+    if (!hostAllowed(req)) { res.writeHead(421); res.end(); return; }
+    let url;
+    try { url = new URL(req.url, 'http://localhost'); } catch { res.writeHead(400); res.end(); return; }
+    const p = pathOf(url);
+    if (p === null) { res.writeHead(400); res.end(); return; }
     if (p === '/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
       res.write('retry: 2000\n\n');
@@ -1291,7 +1186,6 @@ async function handleRequest(req, res) {
       req.on('close', () => clients.delete(res));
       return;
     }
-    if (p.startsWith('/api/dev/')) { await devBridge.handle(req, res, url, { sendJson, readBody }); return; }
     if (p.startsWith('/api/')) return await handleApi(req, res, url);
     if (p.startsWith('/ws/')) {
       let rel;
@@ -1300,7 +1194,7 @@ async function handleRequest(req, res) {
     }
     const rel = p === '/' ? 'index.html' : p.replace(/^\/+/, '');
     const file = path.normalize(path.join(ROOT, 'public', rel));
-    if (!file.startsWith(path.join(ROOT, 'public'))) { res.writeHead(403); res.end(); return; }
+    if (!file.startsWith(path.join(ROOT, 'public') + path.sep)) { res.writeHead(403); res.end(); return; }
     if (file.endsWith('.html')) return serveHtml(res, file);
     return serveStatic(res, file);
   } catch (e) {
@@ -1311,38 +1205,9 @@ async function handleRequest(req, res) {
 
 const server = http.createServer(handleRequest);
 
-// External listener: login first, and the dev bridge API does not exist here at all.
-let extServer = null;
-if (cfg.external.enabled) {
-  const gate = new ExternalGate(HOME_DIR, { log: (t) => store.log('external', t) });
-  const secure = cfg.external.https !== false;
-  const onExternal = async (req, res) => {
-    try {
-      const url = new URL(req.url, 'https://external');
-      const p = pathOf(url);
-      if (p === null) { res.writeHead(400); res.end(); return; }
-      if (path.posix.normalize(p).toLowerCase().startsWith('/api/dev')) { res.writeHead(404); res.end('not found'); return; }
-      if (await gate.handle(req, res, p, { secure })) return;
-      await handleRequest(req, res);
-    } catch (e) {
-      console.error(e);
-      if (!res.headersSent) { res.writeHead(500); res.end(); }
-    }
-  };
-  try {
-    extServer = secure ? https.createServer(gate.tls(), onExternal) : http.createServer(onExternal);
-    extServer.on('error', (e) => console.log(tx().extPortFail(e.message)));
-    extServer.listen(cfg.external.port, cfg.external.host, () => {
-      console.log(tx().extOn(secure ? 'https' : 'http', cfg.external.port));
-    });
-  } catch (e) {
-    console.log(tx().extFail(e.message));
-  }
-}
-
 // First run: say hello once.
 if (!store.messages.length) {
-  post({ from: 'system', kind: 'welcome', text: tx().welcome(AI_IDS.map((id) => MEMBERS[id].name).join(tx().sep)) });
+  post({ from: 'system', kind: 'welcome', text: tx().welcome(AI_IDS.filter((id) => !hidden(id)).map((id) => MEMBERS[id].name).join(tx().sep)) });
 }
 
 // Resume after a restart only if the room was on.
@@ -1362,6 +1227,8 @@ setInterval(tick, 500);
 // Usage limits: poll every usagePollSec while the room is on, usagePollIdleSec when off.
 
 const usage = new UsageMonitor(HOME_DIR, adapters.bins, { onUpdate: () => broadcast('usage', usageView()) });
+// Only members that run on a CLI have a subscription window to look up.
+const usageIds = () => AI_IDS.filter((id) => avail[id] && adapters.backend(id) === 'cli');
 function usageView() {
   const v = usage.view();
   const now = Date.now();
@@ -1378,9 +1245,42 @@ function pushUsageSoon() {
 }
 setInterval(() => {
   const every = (room.running ? cfg.usagePollSec : cfg.usagePollIdleSec) * 1000;
-  if (!usage.polling && Date.now() - usage.lastPoll >= every) usage.pollAll();
+  if (!usage.polling && Date.now() - usage.lastPoll >= every) usage.pollAll(usageIds());
 }, 10000);
-usage.pollAll();
+usage.pollAll(usageIds());
+
+// ---------------------------------------------------------------------------
+// Discord: the room in a channel (lib/discord.mjs). Needs DISCORD_BOT_TOKEN in .env and
+// discord.channelId in config.json; without them the room runs on the web page only.
+
+if (cfg.discord.enabled && process.env.DISCORD_BOT_TOKEN && cfg.discord.channelId) {
+  discord = new DiscordBridge({
+    root: ROOT,
+    home: HOME_DIR,
+    cfg,
+    store,
+    token: process.env.DISCORD_BOT_TOKEN,
+    nameOf: name,
+    maxImageBytes: UPLOAD_MAX_BYTES,
+    userSend: (o) => userSend({ ...o, via: 'discord' }),
+    userReact: (roomId, emoji) => { room.lastUserAt = Date.now(); react(roomId, 'user', emoji); },
+    room: {
+      view: () => ({ room: roomView(), members: AI_IDS.filter((id) => !hidden(id)).map(memberView) }),
+      start: () => { if (!room.running) startRoom(); },
+      stop: () => { if (room.running || room.sleeping) stopRoom(false); },
+      speed: (s) => {
+        if (!setSpeed(s)) return false;
+        store.saveState();
+        pushRoom();
+        return true;
+      },
+    },
+    log: (t) => store.log('discord', t),
+  });
+  discord.start();
+} else if (cfg.discord.enabled) {
+  console.log('Discord: off (needs DISCORD_BOT_TOKEN in .env and discord.channelId in config.json)');
+}
 
 server.on('error', (e) => {
   if (e.code !== 'EADDRINUSE' && e.code !== 'EACCES') throw e;
@@ -1390,7 +1290,9 @@ server.on('error', (e) => {
 });
 
 server.listen(cfg.port, cfg.host, () => {
-  const miss = AI_IDS.filter((id) => !avail[id]);
+  const miss = AI_IDS.filter((id) => !avail[id] && !hidden(id) && adapters.backend(id) === 'cli');
+  const noKey = AI_IDS.filter((id) => !avail[id] && !hidden(id) && adapters.backend(id) === 'go');
+  if (noKey.length) console.log(`OpenCode Go: OPENCODE_GO_API_KEY is not set in .env (offline: ${noKey.join(', ')})`);
   const url = `http://localhost:${cfg.port}`;
   console.log(tx().listening(url));
   console.log(`CLI: ${JSON.stringify(adapters.bins)}`);
@@ -1407,7 +1309,7 @@ server.listen(cfg.port, cfg.host, () => {
 });
 
 function shutdown() {
-  devBridge.close();
+  discord?.close();
   killAll();
   for (const id of AI_IDS) store.state.seen[id] = agents[id].seen;
   store.saveState();
