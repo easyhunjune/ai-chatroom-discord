@@ -10,7 +10,8 @@
   "imageCooldownSec": 300,
   "webSearch": false,
   "boost": { "mode": "auto" },
-  "spark": { "enabled": false },
+  "spark": { "enabled": true },
+  "selfStart": true,
   "discord": { "enabled": true, "channelId": "", "ownerIds": [], "systemMessages": true },
   "bins": {},
   "agents": {

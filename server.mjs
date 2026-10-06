@@ -53,6 +53,10 @@ const DEFAULT_CFG = {
   historyForPrompt: 40,
   autoSleepMinutes: 30,
   speed: 'normal',
+  // Members may start talking on their own when the room is quiet (the spark below, or idle
+  // turns when spark is off). false: nobody speaks first; they only answer messages and keep
+  // a conversation going. Changeable at runtime (Discord "!선톡 on|off", POST /api/room).
+  selfStart: true,
   imageGen: true,
   imageCooldownSec: 240,
   // Members may use their CLI's own web search (lib/agents.mjs chat()); nothing that
@@ -142,6 +146,7 @@ room.speed ??= cfg.speed;
 if (!Object.hasOwn(SPEEDS, room.speed)) room.speed = Object.hasOwn(SPEEDS, cfg.speed) ? cfg.speed : 'normal';
 room.boostMode ??= cfg.boost.mode;
 room.autoSleepMin ??= cfg.autoSleepMinutes;
+room.selfStart ??= cfg.selfStart !== false;
 room.enabled ??= {};
 for (const id of AI_IDS) room.enabled[id] ??= true;
 room.lastUserAt = Date.now();
@@ -336,7 +341,7 @@ function memberView(id) {
 function roomView() {
   return {
     running: room.running, sleeping: room.sleeping, speed: room.speed, autoSleepMin: room.autoSleepMin,
-    calls: room.calls, roomName: cfg.roomName, userName: cfg.userName, lang: getLang(), boostMode: boostMode(),
+    selfStart: room.selfStart, calls: room.calls, roomName: cfg.roomName, userName: cfg.userName, lang: getLang(), boostMode: boostMode(),
   };
 }
 function pushMembers() { broadcast('members', AI_IDS.map(memberView)); }
@@ -377,7 +382,7 @@ function tick() {
   const last = store.lastMessage();
   const quietMs = now - Math.max(last?.ts ?? 0, room.startedAt ?? 0);
   const aiBubbles = store.recent(60).filter((m) => AI_IDS.includes(m.from) && now - m.ts < 60000).length;
-  maybeSpark(now, sp);
+  if (room.selfStart) maybeSpark(now, sp);
 
   for (const id of shuffle([...AI_IDS])) {
     const a = agents[id];
@@ -385,7 +390,9 @@ function tick() {
 
     const fresh = store.after(a.seen).filter((m) => m.from !== id);
     if (!adapters.canSee(id) && waitingForDesc(fresh, now)) continue;
-    if (fresh.length) {
+    // With selfStart off, only someone actually saying something wakes a member; a system
+    // notice alone (welcome, file saved, boost armed) doesn't.
+    if (fresh.length && (room.selfStart || fresh.some((m) => m.from !== 'system'))) {
       a.idleStreak = 0;
       a.idleAt = null;
       const urgent = fresh.some((m) => isCalled(m, id));
@@ -394,7 +401,7 @@ function tick() {
         a.wakeAt = now + rand(lo, hi) * 1000;
         a.reason = urgent ? 'urgent' : 'new';
       }
-    } else if (!a.wakeAt && !sparkOn()) {
+    } else if (!a.wakeAt && !sparkOn() && room.selfStart) {
       // Old quiet-time behaviour (spark off): everyone gets their own idle turn.
       a.idleAt ??= now + rand(...sp.idle) * 1000 * Math.pow(1.7, Math.min(a.idleStreak, 5));
       if (now >= a.idleAt && quietMs > sp.idle[0] * 500) {
@@ -1040,6 +1047,18 @@ function setSpeed(s) {
   return true;
 }
 
+// Turning it off also cancels a quiet-time turn that is already scheduled.
+function setSelfStart(on) {
+  room.selfStart = !!on;
+  if (on) return;
+  for (const id of AI_IDS) {
+    const a = agents[id];
+    if (!a.busy && (a.reason === 'spark' || a.reason === 'idle')) { a.wakeAt = null; a.reason = null; }
+    a.idleAt = null;
+  }
+  spark.who = null;
+}
+
 // The page is only served under localhost names (plus config allowedHosts). A DNS
 // rebinding page reaches us under its own host name, so it is refused here.
 function hostAllowed(req) {
@@ -1109,6 +1128,7 @@ async function handleApi(req, res, url) {
   }
   if (p === '/api/room') {
     setSpeed(body.speed);
+    if (typeof body.selfStart === 'boolean') setSelfStart(body.selfStart);
     if (['auto', 'manual', 'off'].includes(body.boostMode)) room.boostMode = body.boostMode;
     if (Number.isFinite(body.autoSleepMin)) room.autoSleepMin = Math.max(0, Math.min(600, body.autoSleepMin));
     if (body.running === true && !room.running) startRoom();
@@ -1274,6 +1294,11 @@ if (cfg.discord.enabled && process.env.DISCORD_BOT_TOKEN && cfg.discord.channelI
         store.saveState();
         pushRoom();
         return true;
+      },
+      selfStart: (on) => {
+        setSelfStart(on);
+        store.saveState();
+        pushRoom();
       },
     },
     log: (t) => store.log('discord', t),

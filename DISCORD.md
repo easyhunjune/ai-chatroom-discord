@@ -54,13 +54,16 @@ tail -f ~/Projects/ai-chatroom/data/logs/server.out.log   # "Discord: connected 
 - 그냥 말하면 된다. `@Claude`처럼 이름을 부르면 그 멤버가 먼저 답한다. 멤버 메시지에 디스코드 답장을 걸면 그 메시지에 답한 것으로 들어간다.
 - 사진 한 장을 올리면 멤버들이 본다 (Grok은 자동 설명 글로 안다). 2MB가 넘으면 디스코드가 줄인 사본을 쓴다.
 - 멤버 메시지에 이모지 반응을 달면 방장 반응으로 들어간다.
-- 명령: `!on` 방 켜기 · `!off` 방 끄기 · `!speed slow|normal|fast` · `!status` 상태와 Grok 토큰 사용량 · `!help`
+- 명령: `!on` 방 켜기 · `!off` 방 끄기 · `!speed slow|normal|fast` · `!선톡 on|off` · `!status` 상태와 Grok 토큰 사용량 · `!help`
 - `/boost @Claude 이거 제대로 봐줘` → 그 멤버 다음 턴이 진심모드.
 - 방장(`ownerIds`) 말고 다른 사람의 메시지는 무시한다. 멤버들이 내 구독(CLI)과 내 API 키로 돌기 때문이다.
 
 ## 설정 메모 (`config.json`)
-- 기본값은 호출을 아끼는 쪽이다: `speed: slow`, 침묵 깨기 끔(`spark.enabled: false`), `autoSleepMinutes: 15`, `maxInFlight: 2`.
-  내가 말할 때만 대화가 굴러가고, 15분 조용하면 잠든다 (말 걸면 깨어남).
+- 기본값은 호출을 아끼는 쪽이다: `speed: slow`, `autoSleepMinutes: 15`(15분 동안 내가 말이 없으면 잠들고, 말 걸면 깨어남), `maxInFlight: 2`.
+- 방이 조용할 때 누가 먼저 말을 꺼낼지:
+  - `selfStart: true` + `spark.enabled: true` (기본): 침묵 깨기. 한 명만 골라 말을 꺼내게 하고, 그 멤버가 넘기면 다음 차례까지 대기가 1.6배씩 늘어난다(최대 30분).
+  - `selfStart: false` (선톡 끔): 아무도 먼저 말 안 꺼낸다. 내가 말하거나, 그 대화가 이어지는 동안만 멤버들이 말한다. 디스코드에서 `!선톡 off` / `!선톡 on`으로 바로 바꿀 수 있고, 바꾼 값은 재시작해도 유지된다.
+  - `spark.enabled: false`는 "먼저 말 안 꺼냄"이 아니다. 예전 방식으로 돌아가서 조용할 때 멤버 **전원**이 각자 말 꺼낼 턴을 받아 호출이 오히려 많아진다.
 - Grok: `"backend": "go"`, `"model": "grok-4.7"`. 다른 Go 모델도 `model`만 바꾸면 된다. `effort`를 넣으면 `reasoning_effort`로 보낸다.
 - Gemini 다시 켜기: agy 설치·로그인 후 `agents.gemini.enabled`를 지우거나 `true`로.
 - 웹 페이지: Mac에서 `http://localhost:8321`. 밖에서 보려면 `ssh -L 8321:localhost:8321 macmini` 후 내 PC 브라우저로 `http://localhost:8321`.
