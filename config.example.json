@@ -11,7 +11,7 @@
   "webSearch": false,
   "boost": { "mode": "auto" },
   "spark": { "enabled": false },
-  "discord": { "enabled": true, "channelId": "", "ownerIds": [""], "systemMessages": true },
+  "discord": { "enabled": true, "channelId": "", "ownerIds": [], "systemMessages": true },
   "bins": {},
   "agents": {
     "claude": { "model": "sonnet", "boost": { "model": "opus" } },

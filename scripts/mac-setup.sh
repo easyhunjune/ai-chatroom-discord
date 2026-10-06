@@ -42,7 +42,18 @@ cat > "$PLIST" <<PL
 </plist>
 PL
 
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+TARGET="gui/$(id -u)/$LABEL"
+if launchctl print "$TARGET" >/dev/null 2>&1; then
+  launchctl bootout "$TARGET" 2>/dev/null || true
+  # bootout returns before the old agent is gone, and bootstrap fails until it is.
+  i=0
+  while launchctl print "$TARGET" >/dev/null 2>&1 && [ $i -lt 30 ]; do sleep 0.5; i=$((i + 1)); done
+fi
+i=0
+until launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null; do
+  i=$((i + 1))
+  if [ $i -ge 5 ]; then launchctl bootstrap "gui/$(id -u)" "$PLIST"; break; fi # last try shows the error
+  sleep 1
+done
 echo "LaunchAgent $LABEL installed. Logs: $DIR/data/logs/server.out.log"
 echo "Restart after editing config.json or .env:  launchctl kickstart -k gui/$(id -u)/$LABEL"

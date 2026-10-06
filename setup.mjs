@@ -619,7 +619,9 @@ function roomConfig() {
   const ex = JSON.parse(fs.readFileSync(EXAMPLE, 'utf8'));
   const user = readConfig();
   const agents = {};
-  for (const c of CLIS) agents[c.id] = { ...ex.agents[c.id], ...(user.agents?.[c.id] || {}) };
+  // This tests the CLIs it found, so a member the room runs on an API (backend "go") is still
+  // tested through its CLI here.
+  for (const c of CLIS) agents[c.id] = { ...ex.agents[c.id], ...(user.agents?.[c.id] || {}), backend: 'cli' };
   return { ...ex, ...user, agents, webSearch: false, turnTimeoutSec: 120 };
 }
 

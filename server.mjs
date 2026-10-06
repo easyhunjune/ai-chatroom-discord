@@ -117,7 +117,7 @@ const store = new Store(HOME_DIR);
 const adapters = new Adapters(HOME_DIR, cfg);
 const avail = adapters.available();
 // Disabled in config.json (agents.<id>.enabled: false): not shown, not in the roster.
-const hidden = (id) => cfg.agents[id]?.enabled === false;
+const hidden = (id) => !adapters.enabled(id);
 // Real image generation: the member's CLI has an image tool (API members don't).
 const canDraw = (id) => !!(MEMBERS[id].imageGen && cfg.imageGen && avail[id] && adapters.backend(id) === 'cli');
 // The Discord bridge, once started (see the bottom of this file). null = web page only.
@@ -1261,6 +1261,7 @@ if (cfg.discord.enabled && process.env.DISCORD_BOT_TOKEN && cfg.discord.channelI
     store,
     token: process.env.DISCORD_BOT_TOKEN,
     nameOf: name,
+    memberIds: AI_IDS.filter((id) => !hidden(id)),
     maxImageBytes: UPLOAD_MAX_BYTES,
     userSend: (o) => userSend({ ...o, via: 'discord' }),
     userReact: (roomId, emoji) => { room.lastUserAt = Date.now(); react(roomId, 'user', emoji); },

@@ -41,6 +41,7 @@ codex login status     # "Logged in" 이면 됨
   ```json
   "discord": { "enabled": true, "channelId": "채널 ID", "ownerIds": ["내 유저 ID"], "systemMessages": true }
   ```
+  ID는 꼭 따옴표로 감싼 문자열로 쓴다. 숫자로 쓰면 자릿수가 커서 다른 값으로 바뀐다(서버 로그에 경고가 뜨고 무시됨).
 
 ### 4. 다시 시작
 ```bash
