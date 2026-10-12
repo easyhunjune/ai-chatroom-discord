@@ -66,6 +66,7 @@ tail -f ~/Projects/ai-chatroom/data/logs/server.out.log   # "Discord: connected 
   - `spark.enabled: false`는 "먼저 말 안 꺼냄"이 아니다. 예전 방식으로 돌아가서 조용할 때 멤버 **전원**이 각자 말 꺼낼 턴을 받아 호출이 오히려 많아진다.
 - Grok: `"backend": "go"`, `"model": "grok-4.7"`. 다른 Go 모델도 `model`만 바꾸면 된다. `effort`를 넣으면 `reasoning_effort`로 보낸다.
 - Gemini 다시 켜기: agy 설치·로그인 후 `agents.gemini.enabled`를 지우거나 `true`로.
+- 멤버별 이미지 생성 끄기: `agents.<id>.imageGen: false`. 예시 설정은 Gemini 이미지 생성을 꺼 둔다. agy 이미지 생성은 권한 확인을 건너뛰는 모드(`--dangerously-skip-permissions`)로 돌아서 구글 자동 탐지에 걸리기 쉬워 보이기 때문이다. 꺼진 멤버는 그림을 SVG로 그린다.
 - 웹 페이지: Mac에서 `http://localhost:8321`. 밖에서 보려면 `ssh -L 8321:localhost:8321 macmini` 후 내 PC 브라우저로 `http://localhost:8321`.
 
 ## 다시 설치 / 업데이트

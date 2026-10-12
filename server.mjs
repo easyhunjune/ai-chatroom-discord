@@ -122,8 +122,10 @@ const adapters = new Adapters(HOME_DIR, cfg);
 const avail = adapters.available();
 // Disabled in config.json (agents.<id>.enabled: false): not shown, not in the roster.
 const hidden = (id) => !adapters.enabled(id);
-// Real image generation: the member's CLI has an image tool (API members don't).
-const canDraw = (id) => !!(MEMBERS[id].imageGen && cfg.imageGen && avail[id] && adapters.backend(id) === 'cli');
+// Real image generation: the member's CLI has an image tool (API members don't), and neither
+// imageGen nor agents.<id>.imageGen in config.json turns it off.
+const canDraw = (id) => !!(MEMBERS[id].imageGen && cfg.imageGen && cfg.agents[id]?.imageGen !== false
+  && avail[id] && adapters.backend(id) === 'cli');
 // The Discord bridge, once started (see the bottom of this file). null = web page only.
 let discord = null;
 
