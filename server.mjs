@@ -83,6 +83,7 @@ const DEFAULT_CFG = {
     gpt: { model: 'gpt-6-sol', effort: 'low', boost: { model: 'gpt-6-astra', effort: 'medium' }, imageModel: 'gpt-6-luna' },
     grok: { model: 'grok-4.7', effort: 'low', boost: { effort: 'high' } },
     gemini: { model: 'gemini-3.8-flash-medium', rotate: 4, boost: { model: 'gemini-3.8-flash-high' } },
+    deepseek: { backend: 'go', model: 'deepseek-v4-pro', boost: null },
   },
 };
 

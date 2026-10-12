@@ -21,13 +21,14 @@ const ICON = {
 };
 const QUICK_EMOJI = ['👍', '😂', '❤️', '😮', '🤔', '🔥', '👀', '🙏'];
 const IMG_EXT = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'];
-const AI_IDS = ['claude', 'gpt', 'grok', 'gemini'];
+const AI_IDS = ['claude', 'gpt', 'grok', 'gemini', 'deepseek'];
 // Every spelling that calls a member, in any room language (same lists as lib/members.mjs).
 const ALIASES = {
   claude: ['claude', '클로드', 'クロード'],
   gpt: ['chatgpt', 'gpt', '지피티', '챗지피티', '쳇지피티', 'チャットgpt', 'チャッピー', 'ジーピーティー'],
   grok: ['grok', '그록', 'グロック', 'グロク'],
   gemini: ['gemini', '제미나이', '제미니', 'ジェミニ', 'ジェミナイ'],
+  deepseek: ['deepseek', '딥시크', 'ディープシーク'],
 };
 const STATUSES = ['idle', 'reading', 'typing', 'away', 'sleeping', 'off', 'missing', 'error'];
 const statusText = (st) => (STATUSES.includes(st) ? t(`status.${st}`) : st);
