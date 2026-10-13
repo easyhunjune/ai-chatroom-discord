@@ -13,13 +13,17 @@
   "spark": { "enabled": true },
   "selfStart": true,
   "discord": { "enabled": true, "channelId": "", "ownerIds": [], "systemMessages": true },
+  "providers": {
+    "go": { "baseUrl": "https://opencode.ai/zen/go/v1", "keyEnv": "OPENCODE_GO_API_KEY" },
+    "hive": { "baseUrl": "https://api-cdn.thehive.ai/api/v3", "keyEnv": "HIVEAI_API_KEY", "api": "chat" }
+  },
   "bins": {},
   "agents": {
     "claude": { "model": "sonnet", "boost": { "model": "opus" } },
     "gpt": { "model": "gpt-6-sol", "effort": "low", "boost": { "model": "gpt-6-astra", "effort": "medium" }, "imageModel": "gpt-6-luna" },
-    "grok": { "backend": "go", "model": "grok-4.7", "effort": null, "boost": null },
+    "grok": { "backend": "api", "provider": "go", "model": "grok-4.7", "effort": null, "boost": null },
     "gemini": { "enabled": false, "imageGen": false, "model": "gemini-3.8-flash-medium", "rotate": 4, "boost": { "model": "gemini-3.8-flash-high" } },
-    "deepseek": { "backend": "go", "model": "deepseek-v4-pro", "boost": null }
+    "deepseek": { "backend": "api", "provider": "hive", "model": "deepseek-ai/deepseek-v4.1-flash", "effort": "low", "boost": { "effort": "high" }, "vision": true }
   },
   "members": {}
 }

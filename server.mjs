@@ -74,16 +74,22 @@ const DEFAULT_CFG = {
   // Discord users in ownerIds talk as the room owner; everyone else in the channel is ignored
   // (the members' CLIs run on the owner's own subscriptions, for the owner's own use).
   discord: { enabled: true, channelId: '', ownerIds: [], systemMessages: true },
-  // OpenCode Go API for members with backend "go" (key: OPENCODE_GO_API_KEY in .env).
-  go: { baseUrl: 'https://opencode.ai/zen/go/v1' },
+  // OpenAI-compatible API services for members with backend "api" (lib/agents.mjs apiChat).
+  // The key is read from the environment variable named in keyEnv (.env). api: "chat" pins
+  // chat/completions; without it a refused call is retried on the Responses API.
+  providers: {
+    go: { name: 'OpenCode Go', baseUrl: 'https://opencode.ai/zen/go/v1', keyEnv: 'OPENCODE_GO_API_KEY' },
+    hive: { name: 'Hive', baseUrl: 'https://api-cdn.thehive.ai/api/v3', keyEnv: 'HIVEAI_API_KEY', api: 'chat' },
+  },
   // model/effort = default; boost = what a 진심모드 turn overrides (null disables it).
-  // backend: "cli" (default) or "go"; enabled: false keeps a member out of the room.
+  // backend: "cli" (default) or "api" with provider (a key of providers; "go" is the old
+  // spelling of backend "api" + provider "go"); enabled: false keeps a member out of the room.
   agents: {
     claude: { model: 'sonnet', boost: { model: 'opus' } },
     gpt: { model: 'gpt-6-sol', effort: 'low', boost: { model: 'gpt-6-astra', effort: 'medium' }, imageModel: 'gpt-6-luna' },
     grok: { model: 'grok-4.7', effort: 'low', boost: { effort: 'high' } },
     gemini: { model: 'gemini-3.8-flash-medium', rotate: 4, boost: { model: 'gemini-3.8-flash-high' } },
-    deepseek: { backend: 'go', model: 'deepseek-v4-pro', boost: null },
+    deepseek: { backend: 'api', provider: 'hive', model: 'deepseek-ai/deepseek-v4.1-flash', effort: 'low', boost: { effort: 'high' }, vision: true },
   },
 };
 
@@ -95,7 +101,12 @@ function loadConfig() {
   cfg.boost = { ...DEFAULT_CFG.boost, ...(user.boost || {}) };
   cfg.spark = { ...DEFAULT_CFG.spark, ...(user.spark || {}) };
   cfg.discord = { ...DEFAULT_CFG.discord, ...(user.discord || {}) };
-  cfg.go = { ...DEFAULT_CFG.go, ...(user.go || {}) };
+  cfg.providers = {};
+  for (const k of new Set([...Object.keys(DEFAULT_CFG.providers), ...Object.keys(user.providers || {})])) {
+    cfg.providers[k] = { ...(DEFAULT_CFG.providers[k] || {}), ...(user.providers?.[k] || {}) };
+  }
+  // Older configs of this branch: "go": {"baseUrl": ...}.
+  if (user.go?.baseUrl) cfg.providers.go.baseUrl = user.go.baseUrl;
   // Older configs: ChatGPT-only deepModel / deepMode / deepTimeoutSec.
   if (user.deepMode && !user.boost?.mode) cfg.boost.mode = user.deepMode;
   if (user.deepTimeoutSec && !user.boost?.timeoutSec) cfg.boost.timeoutSec = user.deepTimeoutSec;
@@ -336,6 +347,7 @@ function memberView(id) {
   return {
     id, name: MEMBERS[id].name, maker: MEMBERS[id].maker, color: MEMBERS[id].color,
     model: cfg.agents[id].model, imageGen: canDraw(id), backend: adapters.backend(id), hidden: hidden(id),
+    provider: adapters.backend(id) === 'api' ? adapters.provider(id).name : null,
     status, drawing: a.imageBusy, enabled: room.enabled[id], available: avail[id],
     calls: a.calls, lastMs: a.lastMs, lastError: a.lastError, tokens: a.tokens,
     deep: !!a.deepNow, defaultModel: defaultLabel(id), boostModel: hasBoost(id) ? boostLabel(id) : null,
@@ -1320,8 +1332,10 @@ server.on('error', (e) => {
 
 server.listen(cfg.port, cfg.host, () => {
   const miss = AI_IDS.filter((id) => !avail[id] && !hidden(id) && adapters.backend(id) === 'cli');
-  const noKey = AI_IDS.filter((id) => !avail[id] && !hidden(id) && adapters.backend(id) === 'go');
-  if (noKey.length) console.log(`OpenCode Go: OPENCODE_GO_API_KEY is not set in .env (offline: ${noKey.join(', ')})`);
+  for (const id of AI_IDS.filter((x) => !avail[x] && !hidden(x) && adapters.backend(x) === 'api')) {
+    const p = adapters.provider(id);
+    console.log(`${p.name}: ${p.keyEnv} is not set in .env (${id} offline)`);
+  }
   const url = `http://localhost:${cfg.port}`;
   console.log(tx().listening(url));
   console.log(`CLI: ${JSON.stringify(adapters.bins)}`);
