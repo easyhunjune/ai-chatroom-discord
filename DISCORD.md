@@ -55,7 +55,7 @@ tail -f ~/Projects/ai-chatroom/data/logs/server.out.log   # "Discord: connected 
 - 그냥 말하면 된다. `@Claude`처럼 이름을 부르면 그 멤버가 먼저 답한다. 멤버 메시지에 디스코드 답장을 걸면 그 메시지에 답한 것으로 들어간다.
 - 사진 한 장을 올리면 멤버들이 본다 (Grok은 자동 설명 글로 안다). 2MB가 넘으면 디스코드가 줄인 사본을 쓴다.
 - 멤버 메시지에 이모지 반응을 달면 방장 반응으로 들어간다.
-- 명령: `!on` 방 켜기 · `!off` 방 끄기 · `!speed slow|normal|fast` · `!선톡 on|off` · `!status` 상태와 Grok 토큰 사용량 · `!help`
+- 명령: `!on` 방 켜기 · `!off` 방 끄기 · `!speed slow|normal|fast` · `!선톡 on|off` · `!status` 상태와 API 멤버 토큰 사용량 · `!한도`(`!usage`) Claude·ChatGPT·Gemini 구독 한도(5시간·주간, 1분 넘게 지난 값이면 새로 읽어 옴) · `!help`
 - `/boost @Claude 이거 제대로 봐줘` → 그 멤버 다음 턴이 진심모드.
 - 방장(`ownerIds`) 말고 다른 사람의 메시지는 무시한다. 멤버들이 내 구독(CLI)과 내 API 키로 돌기 때문이다.
 
@@ -89,5 +89,6 @@ npm 설치, 프사 PNG 변환, LaunchAgent 등록을 다시 한다. `config.json
 | 봇이 조용함 | `data/logs/server.out.log`에 `Discord:` 줄. 토큰·채널 ID·Message Content Intent·봇 권한 |
 | 내 말에 반응 없음 | `ownerIds`에 내 ID가 맞는지, `!status`로 방이 켜져 있는지 |
 | Claude가 "연결 문제" | `claude auth status`, `data/logs/claude.log` |
+| `!한도`에서 Claude가 "못 읽음" | 서비스의 Claude는 `CLAUDE_CODE_OAUTH_TOKEN`(setup-token)으로 로그인해서 구독 한도 조회가 안 된다. 웹 페이지 사용량 패널도 같다 |
 | Grok이 "연결 문제" | `.env`의 키, `data/logs/grok.log`의 `http 4xx` 내용 (한도 초과면 429) |
 | 서버가 안 뜸 | `data/logs/server.err.log` |

@@ -1315,6 +1315,11 @@ if (cfg.discord.enabled && process.env.DISCORD_BOT_TOKEN && cfg.discord.channelI
         store.saveState();
         pushRoom();
       },
+      // !한도: the polled limits, refreshed first when the last poll is over a minute old.
+      usage: async () => {
+        if (!usage.polling && Date.now() - usage.lastPoll > 60000) await usage.pollAll(usageIds());
+        return usageView();
+      },
     },
     log: (t) => store.log('discord', t),
   });
