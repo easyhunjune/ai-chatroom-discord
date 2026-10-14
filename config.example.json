@@ -19,8 +19,8 @@
   },
   "bins": {},
   "agents": {
-    "claude": { "model": "sonnet", "effort": "low", "boost": { "model": "sonnet", "effort": "high" } },
-    "gpt": { "model": "gpt-6-luna", "effort": "low", "boost": { "model": "gpt-6-luna", "effort": "high" }, "imageModel": "gpt-6-luna" },
+    "claude": { "model": "sonnet", "effort": "low", "boost": { "model": "opus", "effort": "xhigh" } },
+    "gpt": { "model": "gpt-6-luna", "effort": "low", "boost": { "model": "gpt-6-astra", "effort": "medium" }, "imageModel": "gpt-6-luna" },
     "grok": { "backend": "api", "provider": "go", "model": "grok-4.7", "effort": null, "boost": null },
     "gemini": { "enabled": false, "imageGen": false, "model": "gemini-3.8-flash-medium", "rotate": 4, "boost": { "model": "gemini-3.8-flash-high" } },
     "deepseek": { "backend": "api", "provider": "hive", "model": "deepseek-ai/deepseek-v4.1-flash", "effort": "low", "boost": { "effort": "high" }, "vision": true }

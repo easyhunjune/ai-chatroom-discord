@@ -65,8 +65,8 @@ tail -f ~/Projects/ai-chatroom/data/logs/server.out.log   # "Discord: connected 
   - `selfStart: true` + `spark.enabled: true` (기본): 침묵 깨기. 한 명만 골라 말을 꺼내게 하고, 그 멤버가 넘기면 다음 차례까지 대기가 1.6배씩 늘어난다(최대 30분).
   - `selfStart: false` (선톡 끔): 아무도 먼저 말 안 꺼낸다. 내가 말하거나, 그 대화가 이어지는 동안만 멤버들이 말한다. 디스코드에서 `!선톡 off` / `!선톡 on`으로 바로 바꿀 수 있고, 바꾼 값은 재시작해도 유지된다.
   - `spark.enabled: false`는 "먼저 말 안 꺼냄"이 아니다. 예전 방식으로 돌아가서 조용할 때 멤버 **전원**이 각자 말 꺼낼 턴을 받아 호출이 오히려 많아진다.
-- 모델 급: 멤버 전원을 Flash급에 맞춰 둔다. Claude는 `sonnet`(평소 effort low, 진심모드 high), ChatGPT는 `gpt-6-luna`(평소 low, 진심모드 high). 진심모드도 같은 모델에 생각만 더 오래 시킨다.
-  - 진심모드(`boost`)에 `effort`만 적으면 기본 진심모드 모델(Claude `opus`, ChatGPT `gpt-6-astra`)이 그대로 남는다. 모델을 바꾸지 않을 때도 `"model"`을 같이 적는다.
+- 모델 급: 평소 대화는 Flash급에 맞춘다. Claude `sonnet`(effort low), ChatGPT `gpt-6-luna`(effort low). 진심모드는 따로 윗급 모델을 부른다. Claude `opus`(effort xhigh), ChatGPT `gpt-6-astra`(effort medium).
+  - 진심모드(`boost`)에 안 적은 항목은 기본 진심모드 값이 남는다. `effort`만 적으면 모델은 기본값(Claude `opus`, ChatGPT `gpt-6-astra`)이 그대로 쓰이니, 같은 모델로 effort만 올리려면 `"model"`도 같이 적는다.
 - API 멤버: `"backend": "api"`에 `"provider"`로 어느 서비스를 쓸지 고른다. 서비스 목록은 `providers`(주소 `baseUrl`, 키가 든 환경변수 이름 `keyEnv`).
   - Grok: `"provider": "go"`(OpenCode Go), `"model": "grok-4.7"`.
   - DeepSeek: `"provider": "hive"`(Hive), `"model": "deepseek-ai/deepseek-v4.1-flash"`, 평소 `"effort": "low"`, 진심모드 `high`, 사진도 직접 본다(`"vision": true`). DeepSeek은 CLI가 없어서 API 전용 멤버.
